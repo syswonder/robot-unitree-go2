@@ -1,0 +1,29 @@
+# Go2 RTAB-Map profile: onboard 3D lidar + chassis odometry + IMU. RTAB-Map
+# owns map->odom; the chassis adapter is the sole odom->base_link authority.
+RGBD/CreateOccupancyGrid: true
+Grid/Sensor: 0
+Grid/FromDepth: false
+Grid/RangeMin: 0.30
+Grid/RangeMax: 10.0
+Grid/CellSize: 0.05
+Grid/RayTracing: true
+Grid/3D: false
+Grid/NormalsSegmentation: true
+Grid/MaxObstacleHeight: 1.50
+Grid/MaxGroundHeight: 0.08
+Grid/FootprintLength: 0.80
+Grid/FootprintWidth: 0.50
+Reg/Strategy: 1
+Reg/Force3DoF: true
+Optimizer/Strategy: 1
+Optimizer/GravitySigma: 0
+RGBD/NeighborLinkRefining: true
+RGBD/ProximityBySpace: true
+RGBD/ProximityPathMaxNeighbors: 1
+RGBD/AngularUpdate: 0.06
+RGBD/LinearUpdate: 0.06
+Mem/NotLinkedNodesKept: true
+Rtabmap/DetectionRate: 2.0
+Icp/MaxCorrespondenceDistance: 0.20
+Icp/MaxTranslation: 0.40
+Icp/MaxRotation: 0.60

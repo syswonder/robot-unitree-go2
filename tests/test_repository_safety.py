@@ -1,0 +1,269 @@
+from pathlib import Path
+import re
+import unittest
+import xml.etree.ElementTree as ET
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class RepositorySafetyTest(unittest.TestCase):
+    @staticmethod
+    def _soma_exports(node: dict) -> list[tuple[str, str]]:
+        exports = [
+            (entry["provider_id"], capability["path"])
+            for entry in node.get("exports", [])
+            for capability in entry.get("capabilities", [])
+        ]
+        for child in node.get("components", []):
+            exports.extend(RepositorySafetyTest._soma_exports(child))
+        return exports
+
+    def test_default_motion_is_disabled(self) -> None:
+        env = (ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertRegex(env, r"(?m)^GO2_ALLOW_MOTION=false$")
+        self.assertRegex(env, r"(?m)^GO2_OPERATOR_PRESENT=false$")
+        self.assertRegex(env, r"(?m)^GO2_ALLOWED_MODES=$")
+
+        deployment = yaml.safe_load(
+            (ROOT / "robonix_manifest.yaml").read_text(encoding="utf-8")
+        )
+        chassis = next(
+            item for item in deployment["primitive"] if item["name"] == "go2_chassis"
+        )
+        self.assertEqual(chassis["config"]["allowed_modes"], [255])
+        self.assertNotIn("ipc_socket", chassis["config"])
+
+    def test_readonly_services_are_loopback_and_use_short_socket_defaults(self) -> None:
+        deployment = yaml.safe_load(
+            (ROOT / "robonix_manifest.yaml").read_text(encoding="utf-8")
+        )
+        dashboard = next(
+            item for item in deployment["service"] if item["name"] == "go2_dashboard"
+        )
+        sensors = next(
+            item for item in deployment["primitive"] if item["name"] == "go2_sensors"
+        )
+        self.assertEqual(dashboard["config"]["host"], "127.0.0.1")
+        self.assertNotIn("camera_ipc_socket", sensors["config"])
+
+    def test_control_plane_and_optional_uis_are_loopback_only(self) -> None:
+        deployment = yaml.safe_load(
+            (ROOT / "robonix_manifest.yaml").read_text(encoding="utf-8")
+        )
+        env = deployment["env"]
+        self.assertEqual(env["ROBONIX_PROVIDER_BIND_HOST"], "127.0.0.1")
+        self.assertEqual(env["ROBONIX_ADVERTISE_HOST"], "127.0.0.1")
+        self.assertEqual(env["SPEECH_BIND_ADDR"], "127.0.0.1")
+        self.assertEqual(env["MAPPING_ENABLE_VIZ"], "false")
+        self.assertNotIn("SCENE_WEB_PORT", env)
+        self.assertNotIn("MAPPING_WEBUI_PORT", env)
+        self.assertEqual(
+            env["SCENE_DATA_DIR"],
+            "${ROBONIX_DEPLOY_DIR}/rbnx-build/data/scene",
+        )
+        self.assertNotIn("SCENE_OBJECT_MEMORY_DB", env)
+        self.assertNotIn("SCENE_GRAPH_CACHE_DIR", env)
+        self.assertNotIn("SCENE_ANNOTATIONS_DIR", env)
+
+        for name, config in deployment["system"].items():
+            listen = config.get("listen")
+            if listen is not None:
+                with self.subTest(system=name):
+                    self.assertTrue(str(listen).startswith("127.0.0.1:"))
+        self.assertEqual(deployment["system"]["scene"]["web_port"], 0)
+
+        mapping = next(
+            item for item in deployment["service"] if item["name"] == "mapping"
+        )
+        dashboard = next(
+            item for item in deployment["service"] if item["name"] == "go2_dashboard"
+        )
+        audio = next(
+            item for item in deployment["primitive"]
+            if item["name"] == "audio_client_bridge"
+        )
+        self.assertEqual(mapping["config"]["webui_port"], 0)
+        self.assertEqual(dashboard["config"]["host"], "127.0.0.1")
+        self.assertEqual(audio["config"]["listen_host"], "127.0.0.1")
+
+        start = (ROOT / "start.sh").read_text(encoding="utf-8")
+        build = (ROOT / "build.sh").read_text(encoding="utf-8")
+        owned = (
+            "export ROBONIX_PROVIDER_BIND_HOST=127.0.0.1",
+            "export ROBONIX_ADVERTISE_HOST=127.0.0.1",
+            "export SPEECH_BIND_ADDR=127.0.0.1",
+            "export MAPPING_ENABLE_VIZ=false",
+        )
+        for source in (start, build):
+            for expected in owned:
+                self.assertIn(expected, source)
+            self.assertIn("unset DISPLAY", source)
+            self.assertNotIn("ROBONIX_PROVIDER_BIND_HOST:-", source)
+            self.assertNotIn("ROBONIX_ADVERTISE_HOST:-", source)
+
+    def test_x86_services_use_docker_defaults_and_inherit_ros_domain(self) -> None:
+        deployment = yaml.safe_load(
+            (ROOT / "robonix_manifest.yaml").read_text(encoding="utf-8")
+        )
+        services = {item["name"]: item for item in deployment["service"]}
+        for name in ("mapping", "nav2"):
+            with self.subTest(name=name):
+                self.assertNotIn("manifest", services[name])
+        self.assertNotIn("ROS_DOMAIN_ID", deployment.get("env", {}))
+
+        build = (ROOT / "build.sh").read_text(encoding="utf-8")
+        start = (ROOT / "start.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            "bzip2 cmake colcon curl docker g++ git python3 rbnx tar uv",
+            build,
+        )
+        self.assertIn("for command in docker git ip nmcli rbnx", start)
+        self.assertNotIn("jetson-native", build)
+        self.assertNotIn("jetson-native", start)
+
+        compatibility = (
+            ROOT / "scripts" / "verify_upstream_compatibility.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("robonix/primitive/lidar/lidar3d", compatibility)
+        self.assertIn("robonix/primitive/chassis/odom", compatibility)
+        self.assertIn("def topic_qos_policy", compatibility)
+        self.assertIn("ros-humble-rmw-cyclonedds-cpp", compatibility)
+        self.assertIn("cancel queued until goal acceptance", compatibility)
+        self.assertIn("ROBONIX_PROVIDER_BIND_HOST", compatibility)
+        self.assertIn("host=self._bind_host", compatibility)
+        self.assertIn("ROBONIX_ADVERTISE_HOST", compatibility)
+        self.assertIn("SCENE_HOST_DATA_DIR", compatibility)
+        self.assertIn('/data/robonix', compatibility)
+        self.assertIn('MAPPING_ENABLE_VIZ="${MAPPING_ENABLE_VIZ:-false}"', compatibility)
+        self.assertIn('if [[ "$VIZ_ENABLED" == true ]]; then', compatibility)
+        self.assertIn("XHOST_AUTHORIZED=true", compatibility)
+        self.assertIn("xhost -local:docker", compatibility)
+        self.assertIn("upstream-lock.txt", compatibility)
+        self.assertIn("manifest_repo_dir mapping", compatibility)
+        self.assertIn("manifest_repo_dir nav2", compatibility)
+        self.assertIn("status --porcelain --untracked-files=normal", compatibility)
+        self.assertNotIn('rbnx-boot/cache/mapping', compatibility)
+        self.assertNotIn('rbnx-boot/cache/nav2', compatibility)
+
+        manifest = yaml.safe_load(
+            (ROOT / "robonix_manifest.yaml").read_text(encoding="utf-8")
+        )
+        services = {item["name"]: item for item in manifest["service"]}
+        self.assertEqual(
+            Path(services["mapping"]["url"].rstrip("/")).stem,
+            "service-map-rbnx",
+        )
+        self.assertEqual(
+            Path(services["nav2"]["url"].rstrip("/")).stem,
+            "service-navigation-rbnx",
+        )
+        self.assertIn("verify_upstream_compatibility.sh", build)
+        self.assertIn("verify_upstream_compatibility.sh", start)
+
+    def test_start_owns_and_validates_the_dedicated_dds_interface(self) -> None:
+        start = (ROOT / "start.sh").read_text(encoding="utf-8")
+        self.assertIn('"192.168.123.99/24"', start)
+        self.assertIn('"/virtual/"', start)
+        self.assertIn('/wireless"', start)
+        self.assertIn('route show default dev "$GO2_NETWORK_INTERFACE"', start)
+        self.assertIn("ip -o -4 addr show dev", start)
+        self.assertNotIn('scope global', start)
+        self.assertIn("ip -o -6 addr show dev", start)
+        self.assertIn("ip -6 route show default dev", start)
+        self.assertIn(
+            "--get-values IP4.GATEWAY,IP4.DNS,IP6.GATEWAY,IP6.DNS",
+            start,
+        )
+        self.assertIn('export CYCLONEDDS_URI="$GO2_CYCLONEDDS_URI"', start)
+        self.assertNotIn('if [[ -z "${CYCLONEDDS_URI:-}" ]]', start)
+
+    def test_private_sdk_runtime_installs_third_party_licenses(self) -> None:
+        chassis = (
+            ROOT / "packages" / "go2_chassis" / "sdk_daemon" / "CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+        camera = (
+            ROOT / "packages" / "go2_sensors" / "camera_daemon" / "CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+        for source in (chassis, camera):
+            self.assertIn("share/licenses/unitree_sdk2", source)
+            self.assertIn("eclipse-cyclonedds/cyclonedds/LICENSE", source)
+            self.assertIn("eclipse-cyclonedds/cyclonedds-cxx/LICENSE", source)
+            self.assertIn("eclipse-iceoryx/iceoryx/LICENSE", source)
+            self.assertIn("Tencent/rapidjson/LICENSE", source)
+
+        inventory = (ROOT / "THIRD_PARTY.md").read_text(encoding="utf-8")
+        self.assertIn("EPL-2.0 OR EDL-1.0", inventory)
+        self.assertIn("BSD-3-Clause", inventory)
+
+    def test_public_landmark_is_not_verified(self) -> None:
+        data = yaml.safe_load((ROOT / "config" / "semantic_landmarks.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(data["schema_version"], 2)
+        self.assertIs(type(data["map_generation"]), int)
+        self.assertGreaterEqual(data["map_generation"], 0)
+        vending = next(row for row in data["landmarks"] if row["name"] == "自动售货机")
+        self.assertFalse(vending["verified"])
+
+        deployment = yaml.safe_load(
+            (ROOT / "robonix_manifest.yaml").read_text(encoding="utf-8")
+        )
+        semantic = next(item for item in deployment["skill"] if item["name"] == "semantic_navigation")
+        self.assertEqual(semantic["config"]["mapping_provider_id"], "mapping")
+        self.assertGreater(float(semantic["config"]["lifecycle_wait_s"]), 0.0)
+        self.assertEqual(
+            semantic["config"]["status_endpoint"],
+            "http://127.0.0.1:${GO2_DASHBOARD_PORT}/api/semantic-task",
+        )
+
+    def test_no_posture_or_low_level_capability(self) -> None:
+        manifest = (ROOT / "robonix_manifest.yaml").read_text(encoding="utf-8")
+        soma = (ROOT / "soma.yaml").read_text(encoding="utf-8")
+        for forbidden in ("/lowcmd", "chassis/posture", "RecoveryStand", "StandUp", "StandDown"):
+            self.assertNotIn(forbidden, manifest)
+            self.assertNotIn(forbidden, soma)
+
+    def test_navigation_tree_has_no_spin_or_backup(self) -> None:
+        xml = ET.parse(ROOT / "config" / "navigate.xml")
+        tags = {node.tag for node in xml.iter()}
+        self.assertNotIn("Spin", tags)
+        self.assertNotIn("BackUp", tags)
+
+    def test_audit_scripts_do_not_publish(self) -> None:
+        readonly_names = ("check", "audit", "list", "record")
+        for path in (ROOT / "scripts").glob("*.sh"):
+            if path.stem.startswith(readonly_names):
+                source = path.read_text(encoding="utf-8")
+                self.assertIsNone(re.search(r"ros2\s+topic\s+pub", source), path)
+
+    def test_local_soma_exports_exist_in_package_manifests(self) -> None:
+        soma = yaml.safe_load((ROOT / "soma.yaml").read_text(encoding="utf-8"))
+        local_packages = {
+            "go2_chassis": ROOT / "packages" / "go2_chassis",
+            "go2_sensors": ROOT / "packages" / "go2_sensors",
+            "robot_description": ROOT / "packages" / "go2_description",
+            "semantic_navigation": ROOT / "packages" / "semantic_navigation",
+        }
+        declared = {
+            provider_id: {
+                item["name"]
+                for item in yaml.safe_load(
+                    (package / "package_manifest.yaml").read_text(encoding="utf-8")
+                )["capabilities"]
+            }
+            for provider_id, package in local_packages.items()
+        }
+        local_exports = [
+            (provider_id, capability)
+            for provider_id, capability in self._soma_exports(soma["robot"])
+            if provider_id in local_packages
+        ]
+        self.assertTrue(local_exports)
+        for provider_id, capability in local_exports:
+            with self.subTest(provider_id=provider_id, capability=capability):
+                self.assertIn(capability, declared[provider_id])
+
+
+if __name__ == "__main__":
+    unittest.main()

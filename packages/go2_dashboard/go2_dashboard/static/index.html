@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Robonix Go2 · 只读态势面板</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #071017;
+      --panel: rgba(16, 29, 39, 0.92);
+      --panel-2: #0b1821;
+      --line: rgba(155, 205, 223, 0.16);
+      --text: #e8f4f7;
+      --muted: #8ea7b2;
+      --cyan: #55d9ef;
+      --green: #67e49b;
+      --amber: #ffc76b;
+      --red: #ff7f86;
+      --shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% -10%, rgba(40, 177, 202, 0.2), transparent 34rem),
+        radial-gradient(circle at 95% 8%, rgba(56, 201, 134, 0.1), transparent 28rem),
+        var(--bg);
+      font-family: Inter, "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.12;
+      background-image:
+        linear-gradient(rgba(120, 190, 210, 0.12) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120, 190, 210, 0.12) 1px, transparent 1px);
+      background-size: 32px 32px;
+    }
+    main { width: min(1560px, calc(100% - 28px)); margin: 0 auto; padding: 20px 0 38px; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .mark {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(85, 217, 239, 0.55);
+      border-radius: 12px;
+      color: var(--cyan);
+      font: 800 17px/1 ui-monospace, monospace;
+      background: rgba(85, 217, 239, 0.08);
+      box-shadow: inset 0 0 20px rgba(85, 217, 239, 0.07);
+    }
+    h1 { margin: 0; font-size: clamp(19px, 2vw, 27px); letter-spacing: 0.02em; }
+    .subtitle { margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .header-status { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 30px;
+      padding: 5px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(5, 13, 18, 0.68);
+      font-size: 12px;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 10px currentColor; }
+    .fresh .dot, .dot.fresh { color: var(--green); background: var(--green); }
+    .stale .dot, .dot.stale { color: var(--amber); background: var(--amber); }
+    .error .dot, .missing .dot, .dot.error { color: var(--red); background: var(--red); }
+    .readonly { color: var(--green); border-color: rgba(103, 228, 155, 0.3); }
+    .alert {
+      display: none;
+      margin-bottom: 14px;
+      padding: 10px 13px;
+      border: 1px solid rgba(255, 127, 134, 0.45);
+      border-radius: 10px;
+      color: #ffd5d8;
+      background: rgba(107, 31, 38, 0.48);
+      font-size: 13px;
+    }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+    .panel {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(145deg, rgba(18, 33, 44, 0.94), rgba(10, 23, 31, 0.94));
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+    .panel-title {
+      min-height: 46px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 13px;
+      border-bottom: 1px solid var(--line);
+    }
+    .panel-title h2 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: 0.05em; }
+    .meta { color: var(--muted); font: 11px/1.35 ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .camera { grid-column: span 5; }
+    .lidar { grid-column: span 3; }
+    .tasks { grid-column: span 4; }
+    .map { grid-column: span 8; }
+    .telemetry { grid-column: span 4; }
+    .inputs { grid-column: span 12; }
+    .visual {
+      position: relative;
+      width: 100%;
+      height: 330px;
+      display: grid;
+      place-items: center;
+      background: #050c11;
+    }
+    #cameraImage { width: 100%; height: 100%; object-fit: contain; display: none; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .placeholder { position: absolute; color: #637b85; font-size: 12px; text-align: center; padding: 18px; }
+    .task-body, .telemetry-body { padding: 12px; display: grid; gap: 10px; }
+    .status-block {
+      min-height: 84px;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(4, 12, 17, 0.42);
+    }
+    .eyebrow { color: var(--muted); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .status-main { margin-top: 7px; color: var(--cyan); font-size: 17px; font-weight: 680; }
+    .status-detail { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .metric { padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(4, 12, 17, 0.42); }
+    .metric span { display: block; color: var(--muted); font-size: 10px; }
+    .metric strong { display: block; margin-top: 5px; font: 600 14px/1.2 ui-monospace, monospace; }
+    .topic-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; padding: 11px; }
+    .topic {
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: rgba(4, 12, 17, 0.42);
+    }
+    .topic-head { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+    .topic-name, .topic-frame { margin-top: 7px; color: var(--muted); font: 10px/1.35 ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .topic-error { margin-top: 6px; color: var(--red); font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+    footer { margin-top: 14px; color: #607680; font-size: 10px; text-align: right; }
+    @media (max-width: 1100px) {
+      .camera, .map { grid-column: span 7; }
+      .lidar, .tasks, .telemetry { grid-column: span 5; }
+      .topic-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+    @media (max-width: 760px) {
+      main { width: min(100% - 18px, 1560px); padding-top: 12px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .header-status { justify-content: flex-start; }
+      .camera, .lidar, .tasks, .map, .telemetry { grid-column: span 12; }
+      .visual { height: 280px; }
+      .topic-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand">
+        <div class="mark">G2</div>
+        <div>
+          <h1>Robonix Go2 态势面板</h1>
+          <div class="subtitle">相机 · 雷达 · 地图 · 位姿 · 任务状态</div>
+        </div>
+      </div>
+      <div class="header-status">
+        <div class="pill readonly"><span class="dot fresh"></span>READ-ONLY</div>
+        <div class="pill" id="rosPill"><span class="dot"></span><span id="rosText">ROS 初始化中</span></div>
+        <div class="pill"><span id="updateText">等待首帧</span></div>
+      </div>
+    </header>
+
+    <div class="alert" id="globalAlert"></div>
+
+    <section class="grid">
+      <article class="panel camera">
+        <div class="panel-title"><h2>相机</h2><div class="meta" id="cameraMeta">等待图像</div></div>
+        <div class="visual">
+          <img id="cameraImage" alt="Go2 相机实时画面">
+          <div class="placeholder" id="cameraPlaceholder">尚未收到相机图像</div>
+        </div>
+      </article>
+
+      <article class="panel lidar">
+        <div class="panel-title"><h2>雷达俯视</h2><div class="meta" id="lidarMeta">等待点云或扫描</div></div>
+        <div class="visual"><canvas id="lidarCanvas"></canvas><div class="placeholder" id="lidarPlaceholder">尚未收到雷达数据</div></div>
+      </article>
+
+      <article class="panel tasks">
+        <div class="panel-title"><h2>任务状态</h2><div class="meta">仅观察</div></div>
+        <div class="task-body">
+          <div class="status-block">
+            <div class="eyebrow">Nav2 NavigateToPose</div>
+            <div class="status-main" id="navMain">idle</div>
+            <div class="status-detail" id="navDetail">尚无动作状态</div>
+          </div>
+          <div class="status-block">
+            <div class="eyebrow">语义任务</div>
+            <div class="status-main" id="semanticMain">idle</div>
+            <div class="status-detail" id="semanticDetail">尚无语义任务状态</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel map">
+        <div class="panel-title"><h2>占据栅格与机器人位姿</h2><div class="meta" id="mapMeta">等待地图</div></div>
+        <div class="visual"><canvas id="mapCanvas"></canvas><div class="placeholder" id="mapPlaceholder">尚未收到地图</div></div>
+      </article>
+
+      <article class="panel telemetry">
+        <div class="panel-title"><h2>定位与里程计</h2><div class="meta" id="poseFrame">map → base_link</div></div>
+        <div class="telemetry-body">
+          <div class="eyebrow">地图坐标</div>
+          <div class="metrics">
+            <div class="metric"><span>X</span><strong id="poseX">—</strong></div>
+            <div class="metric"><span>Y</span><strong id="poseY">—</strong></div>
+            <div class="metric"><span>YAW</span><strong id="poseYaw">—</strong></div>
+          </div>
+          <div class="eyebrow">里程计速度</div>
+          <div class="metrics">
+            <div class="metric"><span>VX</span><strong id="odomVx">—</strong></div>
+            <div class="metric"><span>VY</span><strong id="odomVy">—</strong></div>
+            <div class="metric"><span>WZ</span><strong id="odomWz">—</strong></div>
+          </div>
+          <div class="status-detail" id="odomDetail">尚未收到里程计</div>
+        </div>
+      </article>
+
+      <article class="panel inputs">
+        <div class="panel-title"><h2>数据连接与新鲜度</h2><div class="meta">fresh / stale / missing / error</div></div>
+        <div class="topic-grid" id="topicGrid"></div>
+      </article>
+    </section>
+    <footer>本页面只有订阅与状态显示能力，不包含机器人控制入口。</footer>
+  </main>
+
+  <script>
+    "use strict";
+    const byId = (id) => document.getElementById(id);
+    const stateLabels = { fresh: "新鲜", stale: "过期", missing: "缺失", error: "错误" };
+    let latest = null;
+    let cameraSequence = -1;
+    let mapSequence = -1;
+    let mapImageReady = false;
+    const mapImage = new Image();
+
+    const safe = (value) => String(value ?? "").replace(/[&<>'"]/g, (character) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
+    })[character]);
+    const fixed = (value, digits = 2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
+    const degrees = (radians) => Number.isFinite(Number(radians)) ? `${(Number(radians) * 180 / Math.PI).toFixed(1)}°` : "—";
+    const age = (seconds) => seconds === null || seconds === undefined ? "从未" : `${Number(seconds).toFixed(1)} s`;
+
+    function fitCanvas(canvas) {
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, Math.floor(canvas.clientWidth * ratio));
+      const height = Math.max(1, Math.floor(canvas.clientHeight * ratio));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      return { width, height, ratio };
+    }
+
+    function drawLidar(lidar) {
+      const canvas = byId("lidarCanvas");
+      const { width, height, ratio } = fitCanvas(canvas);
+      const context = canvas.getContext("2d");
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = "#050c11";
+      context.fillRect(0, 0, width, height);
+      const points = Array.isArray(lidar?.points) ? lidar.points : [];
+      byId("lidarPlaceholder").style.display = points.length ? "none" : "block";
+      if (!points.length) return;
+
+      let extent = 2;
+      for (const point of points) extent = Math.max(extent, Math.abs(Number(point[0]) || 0), Math.abs(Number(point[1]) || 0));
+      extent = Math.min(30, extent * 1.12);
+      const scale = Math.min(width, height) / (extent * 2.12);
+      const cx = width / 2;
+      const cy = height / 2;
+      context.lineWidth = ratio;
+      context.strokeStyle = "rgba(117, 171, 187, .14)";
+      for (let radius = 2; radius < extent; radius += 2) {
+        context.beginPath();
+        context.arc(cx, cy, radius * scale, 0, Math.PI * 2);
+        context.stroke();
+      }
+      context.strokeStyle = "rgba(117, 171, 187, .22)";
+      context.beginPath(); context.moveTo(cx, 0); context.lineTo(cx, height); context.stroke();
+      context.beginPath(); context.moveTo(0, cy); context.lineTo(width, cy); context.stroke();
+      context.fillStyle = "rgba(85, 217, 239, .82)";
+      for (const point of points) {
+        const px = cx - Number(point[1]) * scale;
+        const py = cy - Number(point[0]) * scale;
+        if (px < 0 || px > width || py < 0 || py > height) continue;
+        context.fillRect(px - ratio, py - ratio, ratio * 2, ratio * 2);
+      }
+      context.fillStyle = "#67e49b";
+      context.beginPath();
+      context.moveTo(cx, cy - 9 * ratio);
+      context.lineTo(cx - 6 * ratio, cy + 7 * ratio);
+      context.lineTo(cx + 6 * ratio, cy + 7 * ratio);
+      context.closePath();
+      context.fill();
+    }
+
+    function drawMap() {
+      const canvas = byId("mapCanvas");
+      const { width, height, ratio } = fitCanvas(canvas);
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#050c11";
+      context.fillRect(0, 0, width, height);
+      const map = latest?.map;
+      byId("mapPlaceholder").style.display = map && mapImageReady ? "none" : "block";
+      if (!map || !mapImageReady) return;
+      const scale = Math.min(width / map.width, height / map.height);
+      const drawWidth = map.width * scale;
+      const drawHeight = map.height * scale;
+      const offsetX = (width - drawWidth) / 2;
+      const offsetY = (height - drawHeight) / 2;
+      context.imageSmoothingEnabled = false;
+      context.drawImage(mapImage, offsetX, offsetY, drawWidth, drawHeight);
+      context.strokeStyle = "rgba(85, 217, 239, .5)";
+      context.lineWidth = ratio;
+      context.strokeRect(offsetX, offsetY, drawWidth, drawHeight);
+
+      const pose = latest?.pose_map;
+      if (!pose?.position || !map.origin || !Number(map.resolution)) return;
+      const dx = Number(pose.position.x) - Number(map.origin.x);
+      const dy = Number(pose.position.y) - Number(map.origin.y);
+      const originYaw = Number(map.origin.yaw) || 0;
+      const localX = Math.cos(originYaw) * dx + Math.sin(originYaw) * dy;
+      const localY = -Math.sin(originYaw) * dx + Math.cos(originYaw) * dy;
+      const gridX = localX / Number(map.resolution);
+      const gridY = localY / Number(map.resolution);
+      const px = offsetX + gridX * scale;
+      const py = offsetY + (map.height - gridY) * scale;
+      const heading = Number(pose.yaw) - originYaw;
+      context.save();
+      context.translate(px, py);
+      context.rotate(-heading + Math.PI / 2);
+      context.shadowColor = "#071017";
+      context.shadowBlur = 5 * ratio;
+      context.fillStyle = "#55d9ef";
+      context.beginPath();
+      context.moveTo(0, -11 * ratio);
+      context.lineTo(-7 * ratio, 8 * ratio);
+      context.lineTo(0, 5 * ratio);
+      context.lineTo(7 * ratio, 8 * ratio);
+      context.closePath();
+      context.fill();
+      context.restore();
+    }
+
+    mapImage.onload = () => { mapImageReady = true; drawMap(); };
+    mapImage.onerror = () => { mapImageReady = false; byId("mapPlaceholder").textContent = "地图图像解码失败"; drawMap(); };
+
+    function renderTopics(topics) {
+      byId("topicGrid").innerHTML = Object.values(topics || {}).map((topic) => `
+        <div class="topic ${safe(topic.state)}">
+          <div class="topic-head"><span class="dot"></span><span>${safe(topic.label)}</span><span class="meta">${safe(stateLabels[topic.state] || topic.state)}</span></div>
+          <div class="topic-name" title="${safe(topic.topic)}">${safe(topic.topic)}</div>
+          <div class="topic-frame">age ${safe(age(topic.age_s))}${topic.frame_id ? ` · ${safe(topic.frame_id)}` : ""}</div>
+          ${topic.error ? `<div class="topic-error">${safe(topic.error)}</div>` : ""}
+        </div>`).join("");
+    }
+
+    function render(data) {
+      latest = data;
+      const connected = Boolean(data.bridge?.connected);
+      byId("rosPill").className = `pill ${connected ? "fresh" : "error"}`;
+      byId("rosText").textContent = connected ? "ROS 观察线程在线" : "ROS 未连接";
+      byId("updateText").textContent = `更新 ${new Date(data.generated_at * 1000).toLocaleTimeString()}`;
+      const bridgeError = data.bridge?.error || "";
+      byId("globalAlert").style.display = bridgeError ? "block" : "none";
+      byId("globalAlert").textContent = bridgeError;
+
+      const camera = data.camera;
+      byId("cameraMeta").textContent = camera ? `${camera.width}×${camera.height} · ${camera.encoding}` : "等待图像";
+      if (camera?.sequence !== undefined && camera.sequence !== cameraSequence) {
+        cameraSequence = camera.sequence;
+        const image = byId("cameraImage");
+        image.onload = () => { image.style.display = "block"; byId("cameraPlaceholder").style.display = "none"; };
+        image.onerror = () => { image.style.display = "none"; byId("cameraPlaceholder").style.display = "block"; };
+        image.src = `/api/camera.jpg?sequence=${encodeURIComponent(cameraSequence)}`;
+      }
+
+      const lidar = data.lidar;
+      byId("lidarMeta").textContent = lidar ? `${lidar.kind} · ${lidar.point_count} 点` : "等待点云或扫描";
+      drawLidar(lidar);
+
+      const map = data.map;
+      byId("mapMeta").textContent = map ? `${map.width}×${map.height} · ${fixed(map.resolution, 3)} m/cell` : "等待地图";
+      if (map?.sequence !== undefined && map.sequence !== mapSequence) {
+        mapSequence = map.sequence;
+        mapImageReady = false;
+        mapImage.src = `/api/map.png?sequence=${encodeURIComponent(mapSequence)}`;
+      } else {
+        drawMap();
+      }
+
+      const pose = data.pose_map;
+      byId("poseFrame").textContent = pose ? `${pose.parent_frame} → ${pose.child_frame}` : "map → base_link";
+      byId("poseX").textContent = pose ? `${fixed(pose.position?.x)} m` : "—";
+      byId("poseY").textContent = pose ? `${fixed(pose.position?.y)} m` : "—";
+      byId("poseYaw").textContent = pose ? degrees(pose.yaw) : "—";
+
+      const odom = data.odom;
+      byId("odomVx").textContent = odom ? `${fixed(odom.linear?.x)} m/s` : "—";
+      byId("odomVy").textContent = odom ? `${fixed(odom.linear?.y)} m/s` : "—";
+      byId("odomWz").textContent = odom ? `${fixed(odom.angular?.z)} rad/s` : "—";
+      byId("odomDetail").textContent = odom ? `${odom.frame_id} → ${odom.child_frame_id} · x ${fixed(odom.position?.x)} m · y ${fixed(odom.position?.y)} m` : "尚未收到里程计";
+
+      const navigation = data.navigation || {};
+      byId("navMain").textContent = navigation.status || "idle";
+      byId("navDetail").textContent = navigation.goal_id ? `goal ${navigation.goal_id.slice(0, 16)}… · code ${navigation.status_code}` : "尚无动作状态";
+      const semantic = data.semantic_task || {};
+      byId("semanticMain").textContent = `${semantic.target_name || "未指定目标"} · ${semantic.status || "idle"}`;
+      byId("semanticDetail").textContent = semantic.message || (semantic.task_id ? `task ${semantic.task_id}` : "尚无语义任务状态");
+      renderTopics(data.topics);
+    }
+
+    async function refresh() {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 1800);
+      try {
+        const response = await fetch("/api/status", { cache: "no-store", signal: controller.signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        render(await response.json());
+      } catch (error) {
+        byId("globalAlert").style.display = "block";
+        byId("globalAlert").textContent = `面板状态读取失败：${error.message}`;
+        byId("rosPill").className = "pill error";
+        byId("rosText").textContent = "面板连接中断";
+      } finally {
+        clearTimeout(timeout);
+        window.setTimeout(refresh, 650);
+      }
+    }
+    window.addEventListener("resize", () => { drawLidar(latest?.lidar); drawMap(); });
+    refresh();
+  </script>
+</body>
+</html>

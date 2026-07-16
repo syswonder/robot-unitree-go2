@@ -1,0 +1,8 @@
+fastapi>=0.110,<1.0
+uvicorn>=0.27,<1.0
+Pillow>=10.2,<13.0
+grpcio>=1.50
+protobuf>=4
+mcp>=1.0
+fastmcp>=3
+PyYAML>=6
