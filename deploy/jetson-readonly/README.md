@@ -87,6 +87,8 @@ The build replaces the pinned base image's plain-HTTP Ubuntu Ports endpoint
 with the HTTPS Tsinghua University Ubuntu Ports mirror registered by Ubuntu as
 an official mirror, and uses Tsinghua's documented HTTPS ROS 2 mirror.  APT's
 embedded ROS key, signed metadata, and package verification remain enabled.
+The ROS mirror entry requests binary packages only, matching that mirror's
+documented configuration and this image's build requirements.
 Builder and runtime package downloads use the same locked BuildKit cache, so
 the two stages do not compete for a small proxy and successfully downloaded
 archives survive a failed build attempt.  Those cache mounts are builder-local

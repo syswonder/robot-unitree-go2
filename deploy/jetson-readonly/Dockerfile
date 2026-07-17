@@ -14,6 +14,9 @@ RUN grep -Fq \
     && test "$(readlink -f /etc/apt/sources.list.d/ros2.sources)" = \
         /usr/share/ros-apt-source/ros2.sources \
     && grep -Fq \
+        'Types: deb deb-src' \
+        /usr/share/ros-apt-source/ros2.sources \
+    && grep -Fq \
         'URIs: http://packages.ros.org/ros2/ubuntu' \
         /usr/share/ros-apt-source/ros2.sources \
     && sed -i \
@@ -22,17 +25,26 @@ RUN grep -Fq \
     && sed -i \
         's|URIs: http://packages.ros.org/ros2/ubuntu|URIs: https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu|' \
         /usr/share/ros-apt-source/ros2.sources \
+    && sed -i \
+        's|^Types: deb deb-src$|Types: deb|' \
+        /usr/share/ros-apt-source/ros2.sources \
     && ! grep -Fq \
         'http://ports.ubuntu.com/ubuntu-ports/' \
         /etc/apt/sources.list \
     && ! grep -Fq \
         'URIs: http://packages.ros.org/ros2/ubuntu' \
         /usr/share/ros-apt-source/ros2.sources \
+    && ! grep -Fq \
+        'deb-src' \
+        /usr/share/ros-apt-source/ros2.sources \
     && grep -Fq \
         'https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/' \
         /etc/apt/sources.list \
     && grep -Fq \
         'URIs: https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu' \
+        /usr/share/ros-apt-source/ros2.sources \
+    && grep -Fq \
+        'Types: deb' \
         /usr/share/ros-apt-source/ros2.sources
 
 FROM verified_base AS builder

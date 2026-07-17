@@ -98,6 +98,7 @@ class JetsonReadonlyProfileTest(unittest.TestCase):
             "URIs: https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu",
             dockerfile,
         )
+        self.assertIn("s|^Types: deb deb-src$|Types: deb|", dockerfile)
 
     def test_chassis_include_copy_matches_adapter_relative_include(self) -> None:
         dockerfile = self.read("Dockerfile")
