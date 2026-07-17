@@ -38,6 +38,14 @@ default standing mode, `mode=3` as locomotion, `mode=5` as lie-down and
 and lying captures. Therefore mode alone is not a control-health proof on this
 firmware.
 
+The current hardware baseline is Go2 EDU hardware V2.0, system software
+V1.1.11, and Unitree lidar software 1.0.0.38.  The App currently offers
+V1.1.15 with only the note “优化配网问题”.  Do not install that update during
+commissioning: the dedicated wired DDS link is already healthy, and changing
+firmware would invalidate the recorded topic, QoS, service, timestamp, and
+error-code baseline.  Treat any later update as a separate maintenance window
+and repeat the complete read-only audit afterwards.
+
 The App's grey `sport_mode` entry has the same name as Unitree's switchable
 default motion-control service, but public source does not establish the App
 button's exact implementation, and the current dog continued publishing

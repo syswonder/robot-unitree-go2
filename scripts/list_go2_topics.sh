@@ -57,7 +57,7 @@ printf 'topic\ttype\n' >"${SELECTED}"
 printf 'topic\ttype\trate\tframe_ids\tinfo_status\thz_status\techo_status\n' >"${SUMMARY}"
 
 timeout --signal=INT --kill-after=2s "${DISCOVERY_TIMEOUT}s" \
-  ros2 topic list -t >"${ALL_TOPICS}" 2>"${DISCOVERY_LOG}"
+  ros2 topic list --no-daemon -t >"${ALL_TOPICS}" 2>"${DISCOVERY_LOG}"
 discovery_status=$?
 if (( discovery_status != 0 )); then
   printf 'ros2 topic list -t 失败或超时（状态 %d）；详情：%s\n' "${discovery_status}" "${DISCOVERY_LOG}" >&2
@@ -99,7 +99,7 @@ while IFS=$'\t' read -r topic type; do
   frames_file="${DETAIL_DIR}/${safe_name}.frames.txt"
 
   timeout --signal=INT --kill-after=2s "${INFO_TIMEOUT}s" \
-    ros2 topic info --verbose "${topic}" >"${info_file}" 2>&1
+    ros2 topic info --no-daemon --verbose "${topic}" >"${info_file}" 2>&1
   info_status=$?
 
   timeout --signal=INT --kill-after=2s "${HZ_TIMEOUT}s" \
@@ -108,13 +108,13 @@ while IFS=$'\t' read -r topic type; do
 
   if [[ "${type,,}" != *"tf2_msgs/msg/tfmessage"* ]]; then
     timeout --signal=INT --kill-after=2s "${ECHO_TIMEOUT}s" \
-      ros2 topic echo --once --no-arr "${topic}" >"${sample_file}" 2>&1
+      ros2 topic echo --no-daemon --once --no-arr "${topic}" >"${sample_file}" 2>&1
   elif [[ "${topic}" == "/tf_static" ]]; then
     timeout --signal=INT --kill-after=2s "${ECHO_TIMEOUT}s" \
-      ros2 topic echo --once --qos-durability transient_local "${topic}" >"${sample_file}" 2>&1
+      ros2 topic echo --no-daemon --once --qos-durability transient_local "${topic}" >"${sample_file}" 2>&1
   else
     timeout --signal=INT --kill-after=2s "${ECHO_TIMEOUT}s" \
-      ros2 topic echo --once "${topic}" >"${sample_file}" 2>&1
+      ros2 topic echo --no-daemon --once "${topic}" >"${sample_file}" 2>&1
   fi
   echo_status=$?
 

@@ -76,8 +76,9 @@ sliding-window diagnostic and the Robonix provider declares the camera
 capability only after `quality_ready=true`, `healthy=true`, an OK diagnostic,
 fresh frames, sufficient valid FPS, and an acceptable rejection/API-error
 ratio. The NX container health check independently enforces the same live
-diagnostic, so persistent vendor API codes (including the observed opaque
-3104), corrupt JPEGs, low FPS, or disconnects make the runtime unhealthy.
+diagnostic, so persistent vendor API codes (including the observed SDK
+``Call api timeout error`` code 3104), corrupt JPEGs, low FPS, or disconnects
+make the runtime unhealthy.
 
 ## Runtime placement and publisher ownership
 

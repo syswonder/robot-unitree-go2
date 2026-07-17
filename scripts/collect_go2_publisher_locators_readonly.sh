@@ -81,7 +81,7 @@ for index in "${!topics[@]}"; do
   label="${labels[index]}"
   set +e
   timeout --signal=INT --kill-after=2s 8s \
-    ros2 topic info --verbose "${topic}" \
+    ros2 topic info --no-daemon --verbose "${topic}" \
     >"${OUTPUT_DIR}/${label}.topic-info.txt" 2>&1
   status=$?
   set -e
@@ -167,7 +167,7 @@ for index in "${!topics[@]}"; do
   label="${labels[index]}"
   set +e
   timeout --signal=INT --kill-after=2s 8s \
-    ros2 topic echo "${topic}" --once --no-arr \
+    ros2 topic echo "${topic}" --no-daemon --once --no-arr \
     >"${OUTPUT_DIR}/${label}.one-sample.txt" 2>&1
   status=$?
   set -e

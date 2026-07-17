@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import sys
 import time
@@ -36,6 +37,38 @@ DEFAULT_TOPICS = {
     "mid360_cloud": "/utlidar/cloud",
     "mid360_imu": "/utlidar/imu",
 }
+
+
+class TerminationRequest:
+    """Record process-stop signals without terminating before evidence closes."""
+
+    def __init__(self) -> None:
+        self.signal_number: int | None = None
+
+    def handler(self, signal_number: int, _frame: Any) -> None:
+        # Signal handlers should do the minimum possible work.  The bounded
+        # spin loop observes this flag, closes the JSONL stream, and writes the
+        # summary from ordinary Python control flow.
+        if self.signal_number is None:
+            self.signal_number = int(signal_number)
+
+    @property
+    def requested(self) -> bool:
+        return self.signal_number is not None
+
+    @property
+    def exit_reason(self) -> str | None:
+        if self.signal_number == signal.SIGTERM:
+            return "signal_sigterm"
+        if self.signal_number == signal.SIGINT:
+            return "signal_sigint"
+        if self.signal_number is not None:
+            return f"signal_{self.signal_number}"
+        return None
+
+    @property
+    def exit_status(self) -> int:
+        return 128 + self.signal_number if self.signal_number is not None else 0
 
 
 def _bounded_int(value: str, minimum: int, maximum: int, label: str) -> int:
@@ -167,7 +200,9 @@ def run_probe(arguments: argparse.Namespace) -> int:
         "started_clock_read_span_ns": started_clock_span_ns,
         "duration_seconds": arguments.duration_seconds,
         "max_samples": arguments.max_samples,
+        "retained_offsets_per_stream": arguments.retained_offsets_per_stream,
         "topics": topics,
+        "stream_order": list(topics),
         "interpretation": (
             "source_minus_receipt is measurement evidence only; it is never "
             "used to replace a ROS header timestamp"
@@ -218,7 +253,7 @@ def run_probe(arguments: argparse.Namespace) -> int:
 
             # Subscriptions are retained explicitly.  This node intentionally
             # has no publisher, service, action client, or Unitree SDK object.
-            self.subscriptions = [
+            self._subscriptions = [
                 self.create_subscription(
                     SportModeState,
                     topics["sport_primary"],
@@ -245,52 +280,117 @@ def run_probe(arguments: argparse.Namespace) -> int:
                 ),
             ]
 
-    rclpy.init(args=None)
-    node = ReadOnlyTimeProbe()
-    deadline_ns = time.monotonic_ns() + arguments.duration_seconds * 1_000_000_000
-    exit_reason = "duration_elapsed"
-    try:
-        while rclpy.ok() and time.monotonic_ns() < deadline_ns:
-            if total_samples >= arguments.max_samples:
-                exit_reason = "max_samples_reached"
-                break
-            rclpy.spin_once(node, timeout_sec=0.1)
-    except KeyboardInterrupt:
-        exit_reason = "interrupted"
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
-        sample_stream.close()
+    stop_request = TerminationRequest()
+    previous_sigterm_handler = signal.signal(signal.SIGTERM, stop_request.handler)
 
-    finished_realtime_ns, finished_monotonic_ns, finished_clock_span_ns = read_clock_pair()
-    summaries = [tracker.summary() for tracker in trackers.values()]
-    unsafe_counts = sum(
-        tracker.zero + tracker.malformed + tracker.duplicates + tracker.regressions
-        for tracker in trackers.values()
-    )
-    summary = {
-        "schema_version": 1,
-        "mode": "read-only-no-adjust",
-        "exit_reason": exit_reason,
-        "total_samples": total_samples,
-        "started_realtime_ns": started_realtime_ns,
-        "finished_realtime_ns": finished_realtime_ns,
-        "elapsed_monotonic_ns": finished_monotonic_ns - started_monotonic_ns,
-        "finished_clock_read_span_ns": finished_clock_span_ns,
-        "streams": summaries,
-        "pairwise_median_offset_comparisons": pairwise_median_offsets(
-            list(trackers.values())
-        ),
-        "timestamp_anomaly_count": unsafe_counts,
-        "safe_for_clock_discipline": False,
-        "note": (
-            "This probe never authorizes clock discipline. Publisher locator, "
-            "cold-boot, long-duration drift, and operator review remain mandatory."
-        ),
-    }
-    _write_json(output_dir / "summary.json", summary)
-    print(f"READ-ONLY time evidence saved to {output_dir}")
-    return 0
+    def execute_probe() -> int:
+        node = None
+        rclpy_initialized = False
+        # Duration is measured from immediately before ROS initialization to
+        # the monotonic deadline.  Summary elapsed time keeps the earlier
+        # pre-metadata clock sample and is therefore intentionally a little
+        # longer; both definitions are explicit evidence, not wall-clock
+        # guesses.
+        deadline_ns = time.monotonic_ns() + arguments.duration_seconds * 1_000_000_000
+        exit_reason = "unknown"
+        cleanup_errors: list[str] = []
+        try:
+            rclpy.init(args=None)
+            rclpy_initialized = True
+            node = ReadOnlyTimeProbe()
+            while rclpy.ok() and time.monotonic_ns() < deadline_ns:
+                if stop_request.requested:
+                    break
+                if total_samples >= arguments.max_samples:
+                    break
+                rclpy.spin_once(node, timeout_sec=0.1)
+            if stop_request.requested:
+                exit_reason = stop_request.exit_reason or "signal"
+            elif total_samples >= arguments.max_samples:
+                exit_reason = "max_samples_reached"
+            elif time.monotonic_ns() >= deadline_ns:
+                exit_reason = "duration_elapsed"
+            elif not rclpy.ok():
+                exit_reason = "rclpy_shutdown"
+        except KeyboardInterrupt:
+            stop_request.handler(signal.SIGINT, None)
+            exit_reason = stop_request.exit_reason or "signal_sigint"
+        finally:
+            if node is not None:
+                try:
+                    node.destroy_node()
+                except Exception as error:  # pragma: no cover - ROS runtime only
+                    cleanup_errors.append(
+                        f"destroy_node: {type(error).__name__}: {error}"
+                    )
+            if rclpy_initialized:
+                try:
+                    rclpy.shutdown()
+                except Exception as error:  # pragma: no cover - ROS runtime only
+                    cleanup_errors.append(
+                        f"rclpy_shutdown: {type(error).__name__}: {error}"
+                    )
+            try:
+                sample_stream.flush()
+                os.fsync(sample_stream.fileno())
+            except Exception as error:  # pragma: no cover - filesystem failure only
+                cleanup_errors.append(
+                    f"sample_flush: {type(error).__name__}: {error}"
+                )
+            finally:
+                sample_stream.close()
+
+        # A SIGTERM can arrive during the final spin or cleanup.  Give the
+        # signal reason precedence so an externally bounded run is never
+        # mislabeled as a normal duration completion.
+        if stop_request.requested:
+            exit_reason = stop_request.exit_reason or "signal"
+
+        finished_realtime_ns, finished_monotonic_ns, finished_clock_span_ns = (
+            read_clock_pair()
+        )
+        summaries = [tracker.summary() for tracker in trackers.values()]
+        unsafe_counts = sum(
+            tracker.zero
+            + tracker.malformed
+            + tracker.duplicates
+            + tracker.regressions
+            for tracker in trackers.values()
+        )
+        summary = {
+            "schema_version": 1,
+            "mode": "read-only-no-adjust",
+            "exit_reason": exit_reason,
+            "total_samples": total_samples,
+            "started_realtime_ns": started_realtime_ns,
+            "finished_realtime_ns": finished_realtime_ns,
+            "elapsed_monotonic_ns": finished_monotonic_ns - started_monotonic_ns,
+            "configured_duration_ns": arguments.duration_seconds * 1_000_000_000,
+            "finished_clock_read_span_ns": finished_clock_span_ns,
+            "streams": summaries,
+            "pairwise_median_offset_comparisons": pairwise_median_offsets(
+                list(trackers.values())
+            ),
+            "timestamp_anomaly_count": unsafe_counts,
+            "cleanup_errors": cleanup_errors,
+            "safe_for_clock_discipline": False,
+            "note": (
+                "This probe never authorizes clock discipline. Publisher locator, "
+                "cold-boot, long-duration drift, and operator review remain mandatory."
+            ),
+        }
+        _write_json(output_dir / "summary.json", summary)
+        print(f"READ-ONLY time evidence saved to {output_dir}")
+        if stop_request.requested:
+            return stop_request.exit_status
+        return 1 if cleanup_errors else 0
+
+    try:
+        return execute_probe()
+    finally:
+        # This outer finally covers normal return, SIGTERM/SIGINT completion,
+        # ROS exceptions, summary failures, and cleanup failures.
+        signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
 
 def main(argv: list[str] | None = None) -> int:

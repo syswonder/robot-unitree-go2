@@ -390,12 +390,26 @@ class StaticSafetyTest(unittest.TestCase):
                 self.assertNotIn(token, source, f"{token} in {path}")
             self.assertIn("create_subscription", source)
 
+        probe_source = paths[1].read_text(encoding="utf-8")
+        self.assertIn("self._subscriptions = [", probe_source)
+        self.assertNotIn("self.subscriptions = [", probe_source)
+
+        wrapper_source = (ROOT / "scripts" / "probe_go2_time_readonly.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'MAX_SAMPLES="${GO2_TIME_PROBE_MAX_SAMPLES:-500000}"',
+            wrapper_source,
+        )
+
     def test_locator_echoes_are_bounded_and_never_publish(self) -> None:
         source = (ROOT / "scripts" / "collect_go2_publisher_locators_readonly.sh").read_text(
             encoding="utf-8"
         )
         self.assertIn("timeout --signal=INT", source)
         self.assertIn("ros2 topic echo", source)
+        self.assertIn("ros2 topic echo \"${topic}\" --no-daemon", source)
+        self.assertIn("ros2 topic info --no-daemon --verbose", source)
         self.assertNotIn("ros2 topic pub", source)
         self.assertIn("ros_topic_info_provides_ip=false", source)
 

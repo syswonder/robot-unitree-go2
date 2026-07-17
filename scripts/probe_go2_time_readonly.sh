@@ -8,7 +8,10 @@ PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUTPUT_DIR="${1:-${PROJECT_ROOT}/logs/go2-readonly/${STAMP}-time-probe}"
 DURATION_SECONDS="${2:-${GO2_TIME_PROBE_DURATION_SECONDS:-60}}"
-MAX_SAMPLES="${GO2_TIME_PROBE_MAX_SAMPLES:-200000}"
+# A 10-minute Go2 + MID-360 run commonly exceeds 300k aggregate samples.
+# Keep the default bounded while allowing the documented short-run gate to
+# reach its duration instead of terminating at the sample cap.
+MAX_SAMPLES="${GO2_TIME_PROBE_MAX_SAMPLES:-500000}"
 
 cat <<'BANNER'
 =======================================================================
@@ -47,7 +50,7 @@ esac
 
 outer_timeout=$((DURATION_SECONDS + 15))
 set +e
-timeout --signal=INT --kill-after=5s "${outer_timeout}s" \
+timeout --signal=TERM --kill-after=15s --preserve-status "${outer_timeout}s" \
   python3 "${SCRIPT_DIR}/probe_go2_time_readonly.py" \
     --output-dir "${OUTPUT_DIR}" \
     --duration-seconds "${DURATION_SECONDS}" \
@@ -59,6 +62,16 @@ timeout --signal=INT --kill-after=5s "${outer_timeout}s" \
 status=$?
 set -e
 
+if (( status == 130 || status == 143 )); then
+  if [[ -s "${OUTPUT_DIR}/summary.json" ]]; then
+    printf '探针收到退出信号（状态 %d）；已完成只读证据收尾：%s\n' \
+      "${status}" "${OUTPUT_DIR}/summary.json" >&2
+  else
+    printf '探针收到退出信号（状态 %d），但 summary.json 缺失：%s\n' \
+      "${status}" "${OUTPUT_DIR}" >&2
+  fi
+  exit "${status}"
+fi
 if (( status == 124 || status == 137 )); then
   printf '外层 timeout 触发（状态 %d）；证据可能不完整：%s\n' \
     "${status}" "${OUTPUT_DIR}" >&2

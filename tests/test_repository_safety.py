@@ -39,6 +39,17 @@ class RepositorySafetyTest(unittest.TestCase):
         self.assertEqual(chassis["config"]["allowed_modes"], [255])
         self.assertNotIn("ipc_socket", chassis["config"])
 
+    def test_readonly_audits_do_not_spawn_or_reuse_ros2_daemon(self) -> None:
+        for relative in (
+            "scripts/list_go2_topics.sh",
+            "scripts/check_tf.sh",
+            "scripts/collect_go2_publisher_locators_readonly.sh",
+            "scripts/check_runtime_ownership.sh",
+        ):
+            with self.subTest(relative=relative):
+                source = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertIn("--no-daemon", source)
+
     def test_readonly_services_are_loopback_and_use_short_socket_defaults(self) -> None:
         deployment = yaml.safe_load(
             (ROOT / "robonix_manifest.yaml").read_text(encoding="utf-8")

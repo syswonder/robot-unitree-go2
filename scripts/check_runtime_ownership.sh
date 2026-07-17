@@ -79,7 +79,7 @@ publisher_count() {
   set +e
   output="$(
     LC_ALL=C timeout --signal=INT --kill-after=1s "${query_timeout_s}s" \
-      ros2 topic info -v "$topic" 2>&1
+      ros2 topic info --no-daemon -v "$topic" 2>&1
   )"
   status=$?
   set -e
