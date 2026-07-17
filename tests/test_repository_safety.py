@@ -1,5 +1,8 @@
+import os
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -120,13 +123,110 @@ class RepositorySafetyTest(unittest.TestCase):
             "bzip2 cmake colcon curl docker g++ git python3 rbnx tar uv",
             build,
         )
+        self.assertLess(
+            build.index('--log-base "$DEPLOY_DIR/rbnx-build/unitree_ros2/log"'),
+            build.index("  build \\\n"),
+            "colcon global options must precede the build verb",
+        )
+        self.assertIn("ros-humble-rosidl-generator-dds-idl", build)
         self.assertIn("for command in docker git ip nmcli rbnx", start)
         self.assertNotIn("jetson-native", build)
         self.assertNotIn("jetson-native", start)
 
+        overlay_helper = (
+            ROOT / "scripts" / "build_robonix_ros2_overlay.sh"
+        ).read_text(encoding="utf-8")
+        for package in (
+            "builtin_interfaces",
+            "geometry_msgs",
+            "sensor_msgs",
+            "std_msgs",
+            "rcl_interfaces",
+        ):
+            self.assertIn(package, overlay_helper)
+        self.assertIn("--packages-skip", overlay_helper)
+        self.assertIn(
+            'rm -rf -- "$idl_root/build" "$idl_root/install" "$idl_root/log"',
+            overlay_helper,
+        )
+        selected_packages = {
+            "packages/go2_chassis/scripts/build.sh": "--packages-select lifecycle",
+            "packages/go2_sensors/scripts/build_ros.sh": "--packages-select lifecycle",
+            "packages/go2_description/scripts/build.sh": "--packages-select lifecycle",
+            "packages/semantic_navigation/scripts/build.sh": (
+                "--packages-select lifecycle semantic_navigation map"
+            ),
+        }
+        for relative, package_selection in selected_packages.items():
+            package_build = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("build_robonix_ros2_overlay.sh", package_build)
+            self.assertIn("robonix_build_ros2_overlay", package_build)
+            self.assertIn(package_selection, package_build.replace("\\\n  ", ""))
+            self.assertNotIn("--packages-up-to map", package_build)
+
+    def test_ros2_overlay_helper_cleans_only_stale_system_packages(self) -> None:
+        helper = ROOT / "scripts" / "build_robonix_ros2_overlay.sh"
+        with tempfile.TemporaryDirectory() as temp:
+            temp_root = Path(temp)
+            fake_bin = temp_root / "bin"
+            fake_bin.mkdir()
+            fake_colcon = fake_bin / "colcon"
+            fake_colcon.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            fake_colcon.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+            command = (
+                'source "$1"; '
+                'robonix_build_ros2_overlay "$2" --packages-select lifecycle'
+            )
+            stale_layouts = (
+                Path("build/sensor_msgs"),
+                Path("install/sensor_msgs"),
+                Path("install/share/sensor_msgs"),
+            )
+            for index, stale_relative in enumerate(stale_layouts):
+                with self.subTest(stale_relative=stale_relative):
+                    idl_root = temp_root / f"stale-{index}"
+                    (idl_root / "src").mkdir(parents=True)
+                    (idl_root / "build" / "lifecycle").mkdir(parents=True)
+                    (idl_root / "install" / "lifecycle").mkdir(parents=True)
+                    (idl_root / "log").mkdir()
+                    (idl_root / stale_relative).mkdir(parents=True, exist_ok=True)
+                    subprocess.run(
+                        ["bash", "-c", command, "bash", str(helper), str(idl_root)],
+                        check=True,
+                        env=env,
+                    )
+                    self.assertFalse((idl_root / "build").exists())
+                    self.assertFalse((idl_root / "install").exists())
+                    self.assertFalse((idl_root / "log").exists())
+
+            clean_root = temp_root / "custom-only"
+            (clean_root / "src").mkdir(parents=True)
+            custom_build = clean_root / "build" / "lifecycle"
+            custom_install = clean_root / "install" / "lifecycle"
+            custom_build.mkdir(parents=True)
+            custom_install.mkdir(parents=True)
+            subprocess.run(
+                ["bash", "-c", command, "bash", str(helper), str(clean_root)],
+                check=True,
+                env=env,
+            )
+            self.assertTrue(custom_build.is_dir())
+            self.assertTrue(custom_install.is_dir())
+
+    def test_upstream_compatibility_gate_is_strict_and_traceable(self) -> None:
+        build = (ROOT / "build.sh").read_text(encoding="utf-8")
+        start = (ROOT / "start.sh").read_text(encoding="utf-8")
         compatibility = (
             ROOT / "scripts" / "verify_upstream_compatibility.sh"
         ).read_text(encoding="utf-8")
+        self.assertNotIn("gsub(/^[\"'", compatibility)
+        self.assertNotIn("[[:space:]]{2}", compatibility)
+        self.assertNotIn("[[:space:]]{4}", compatibility)
+        self.assertIn('url="${url#\\\"}"', compatibility)
+        self.assertIn('url="${url#\\\'}"', compatibility)
         self.assertIn("robonix/primitive/lidar/lidar3d", compatibility)
         self.assertIn("robonix/primitive/chassis/odom", compatibility)
         self.assertIn("def topic_qos_policy", compatibility)
@@ -141,6 +241,13 @@ class RepositorySafetyTest(unittest.TestCase):
         self.assertIn('if [[ "$VIZ_ENABLED" == true ]]; then', compatibility)
         self.assertIn("XHOST_AUTHORIZED=true", compatibility)
         self.assertIn("xhost -local:docker", compatibility)
+        self.assertIn("Mapping generated system-interface isolation", compatibility)
+        self.assertIn("colcon build --packages-select map", compatibility)
+        self.assertIn("Navigation MCP-only code generation", compatibility)
+        self.assertIn("Navigation generated ROS system-interface overlay", compatibility)
+        self.assertIn("Navigation native generated ROS overlay source", compatibility)
+        self.assertIn("Navigation container generated ROS overlay source", compatibility)
+        self.assertIn("forbid_text", compatibility)
         self.assertIn("upstream-lock.txt", compatibility)
         self.assertIn("manifest_repo_dir mapping", compatibility)
         self.assertIn("manifest_repo_dir nav2", compatibility)

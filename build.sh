@@ -57,6 +57,11 @@ set +u
 source /opt/ros/humble/setup.bash
 set -u
 
+ros2 pkg prefix rosidl_generator_dds_idl >/dev/null 2>&1 || {
+  echo "missing ROS package: ros-humble-rosidl-generator-dds-idl" >&2
+  exit 1
+}
+
 [[ -f "$UNITREE_SDK2_DIR/CMakeLists.txt" ]] || {
   echo "missing official unitree_sdk2 submodule; run: git submodule update --init --recursive" >&2
   exit 1
@@ -68,11 +73,12 @@ set -u
 
 "$DEPLOY_DIR/scripts/validate_offline.sh"
 
-colcon build \
+colcon \
+  --log-base "$DEPLOY_DIR/rbnx-build/unitree_ros2/log" \
+  build \
   --base-paths "$DEPLOY_DIR/third_party/unitree_ros2/cyclonedds_ws/src/unitree" \
   --build-base "$DEPLOY_DIR/rbnx-build/unitree_ros2/build" \
   --install-base "$DEPLOY_DIR/rbnx-build/unitree_ros2/install" \
-  --log-base "$DEPLOY_DIR/rbnx-build/unitree_ros2/log" \
   --packages-select unitree_api unitree_go \
   --merge-install \
   --cmake-args -DBUILD_TESTING=OFF

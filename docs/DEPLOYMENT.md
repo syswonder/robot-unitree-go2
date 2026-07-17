@@ -7,6 +7,8 @@
   targets. Their `jetson-native` manifests are ARM64/JetPack-only and must not
   be selected on this workstation.
 - CycloneDDS RMW, Nav2, RTAB-Map, pointcloud-to-laserscan, colcon and CMake.
+- `ros-humble-rosidl-generator-dds-idl`, required directly by the pinned
+  Unitree ROS 2 message packages in addition to ROS's default generators.
 - Robonix `rbnx`, Python build dependencies, Unitree ROS 2 messages and
   Unitree SDK2.
 - A dedicated Go2 Ethernet NIC configured according to the approved runbook.

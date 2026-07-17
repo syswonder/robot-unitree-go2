@@ -7,6 +7,8 @@ PKG="${RBNX_PACKAGE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 BUILD_ROOT="$PKG/rbnx-build"
 DEPLOY_ROOT="${ROBONIX_DEPLOY_DIR:-$(cd "$PKG/../.." && pwd)}"
 SDK2_DIR="${UNITREE_SDK2_DIR:-$DEPLOY_ROOT/third_party/unitree_sdk2}"
+# shellcheck disable=SC1091
+source "$DEPLOY_ROOT/scripts/build_robonix_ros2_overlay.sh"
 
 echo "[go2/build] generating gRPC stubs and canonical ROS 2 IDL overlay"
 rbnx codegen -p "$PKG" --ros2
@@ -22,10 +24,9 @@ fi
 set +u
 source /opt/ros/humble/setup.bash
 set -u
-(
-  cd "$BUILD_ROOT/codegen/ros2_idl"
-  colcon build --merge-install
-)
+robonix_build_ros2_overlay "$BUILD_ROOT/codegen/ros2_idl" \
+  --packages-select lifecycle \
+  --merge-install
 if [ ! -f "$BUILD_ROOT/codegen/ros2_idl/install/setup.bash" ]; then
   echo "[go2/build] generated ROS 2 overlay is incomplete" >&2
   exit 2

@@ -15,20 +15,26 @@ manifest_repo_dir() {
   local trimmed
 
   url="$(awk -v wanted="$provider_name" '
-    /^[[:space:]]{2}- name:[[:space:]]*/ {
+    /^  - name:[[:space:]]*/ {
       name = $0
-      sub(/^[[:space:]]{2}- name:[[:space:]]*/, "", name)
+      sub(/^  - name:[[:space:]]*/, "", name)
       active = (name == wanted)
       next
     }
-    active && /^[[:space:]]{4}url:[[:space:]]*/ {
+    active && /^    url:[[:space:]]*/ {
       url = $0
-      sub(/^[[:space:]]{4}url:[[:space:]]*/, "", url)
-      gsub(/^["'"']|["'"']$/, "", url)
+      sub(/^    url:[[:space:]]*/, "", url)
       print url
       exit
     }
   ' "$DEPLOY_DIR/robonix_manifest.yaml")"
+  # Strip an optional matching YAML scalar quote in the shell. Keeping quote
+  # handling outside the single-quoted awk program avoids corrupting that
+  # program when a literal apostrophe is present.
+  url="${url#\"}"
+  url="${url%\"}"
+  url="${url#\'}"
+  url="${url%\'}"
   [[ -n "$url" ]] || {
     echo "manifest provider has no url: $provider_name" >&2
     exit 1
@@ -68,6 +74,18 @@ require_text() {
     echo "Merge/update the linked upstream compatibility PR before deployment." >&2
     exit 1
   }
+}
+
+forbid_text() {
+  local path="$1"
+  local forbidden="$2"
+  local label="$3"
+  require_file "$path"
+  if grep -Fq -- "$forbidden" "$path"; then
+    echo "incompatible upstream: $label is present in $path" >&2
+    echo "Merge/update the linked upstream compatibility PR before deployment." >&2
+    exit 1
+  fi
 }
 
 require_clean_git_checkout() {
@@ -139,6 +157,9 @@ require_text "$MAP_ROOT/scripts/start.sh" \
   'XHOST_AUTHORIZED=true' "Mapping X11 authorization tracking"
 require_text "$MAP_ROOT/scripts/start.sh" \
   'xhost -local:docker' "Mapping X11 authorization cleanup"
+require_text "$MAP_ROOT/scripts/build_ros2_overlay.sh" \
+  'colcon build --packages-select map' \
+  "Mapping generated system-interface isolation"
 
 require_text "$NAV_ROOT/docker/Dockerfile" \
   "ros-humble-rmw-cyclonedds-cpp" "Navigation CycloneDDS RMW image dependency"
@@ -152,6 +173,14 @@ require_text "$NAV_ROOT/scripts/start.sh" \
   "Navigation provider advertise-host forwarding"
 require_text "$NAV_ROOT/nav2_wrapper/atlas_bridge.py" \
   "cancel queued until goal acceptance" "Navigation pending-cancel latch"
+require_text "$NAV_ROOT/scripts/build.sh" \
+  'rbnx codegen --mcp' "Navigation MCP-only code generation"
+forbid_text "$NAV_ROOT/scripts/build.sh" \
+  '--ros2' "Navigation generated ROS system-interface overlay"
+forbid_text "$NAV_ROOT/scripts/start_native.sh" \
+  'codegen/ros2_idl' "Navigation native generated ROS overlay source"
+forbid_text "$NAV_ROOT/docker/entrypoint.sh" \
+  'codegen/ros2_idl' "Navigation container generated ROS overlay source"
 
 require_clean_git_checkout "robonix" "$ROBONIX_ROOT"
 require_clean_git_checkout "mapping" "$MAP_ROOT"
