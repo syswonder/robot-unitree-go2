@@ -78,6 +78,12 @@ if spec is None or spec.loader is None:
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
+expected_ros_install = module.ROS_BUILD / "install" / "go2_sensors" / "lib" / "go2_sensors"
+if module.SENSOR_RELAY != expected_ros_install / "go2_sensor_relay":
+    raise SystemExit(f"provider sensor relay path does not match colcon isolated install: {module.SENSOR_RELAY}")
+if module.CAMERA_BRIDGE != expected_ros_install / "go2_camera_bridge":
+    raise SystemExit(f"provider camera bridge path does not match colcon isolated install: {module.CAMERA_BRIDGE}")
+
 artifacts = tempfile.TemporaryDirectory(prefix="go2-sensors-contract-")
 artifact_root = Path(artifacts.name)
 module.SENSOR_RELAY = artifact_root / "ros" / "go2_sensor_relay"

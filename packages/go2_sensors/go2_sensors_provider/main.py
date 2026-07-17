@@ -20,13 +20,14 @@ from robonix_api import Deferred, Err, Ok, Primitive
 
 ROOT = Path(__file__).resolve().parents[1]
 ROS_BUILD = Path(os.environ.get("GO2_SENSORS_BUILD_ROOT", ROOT / ".build" / "ros"))
+ROS_INSTALL = ROS_BUILD / "install" / "go2_sensors"
 CAMERA_BUILD = Path(
     os.environ.get("GO2_CAMERA_DAEMON_BUILD_ROOT", ROOT / ".build" / "camera-daemon")
 )
 CAMERA_INSTALL = CAMERA_BUILD / "install"
 CAMERA_LIBRARY_DIR = CAMERA_INSTALL / "lib"
-SENSOR_RELAY = ROS_BUILD / "install" / "lib" / "go2_sensors" / "go2_sensor_relay"
-CAMERA_BRIDGE = ROS_BUILD / "install" / "lib" / "go2_sensors" / "go2_camera_bridge"
+SENSOR_RELAY = ROS_INSTALL / "lib" / "go2_sensors" / "go2_sensor_relay"
+CAMERA_BRIDGE = ROS_INSTALL / "lib" / "go2_sensors" / "go2_camera_bridge"
 CAMERA_DAEMON = CAMERA_INSTALL / "bin" / "go2_camera_daemon"
 CAMERA_DDS_LIBRARIES = tuple(
     CAMERA_LIBRARY_DIR / name
