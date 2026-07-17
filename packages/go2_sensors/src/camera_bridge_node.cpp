@@ -144,7 +144,7 @@ private:
     if (value <= 0 || value > limit) {
       throw std::invalid_argument(name + " is outside its safe range");
     }
-    return value;
+    return static_cast<int>(value);
   }
 
   std::uint32_t checked_u32_parameter(
@@ -365,8 +365,9 @@ private:
     }
 
     std_msgs::msg::Header ros_header;
-    ros_header.stamp = rclcpp::Time(
-      static_cast<std::int64_t>(header.capture_realtime_ns), RCL_SYSTEM_TIME).to_msg();
+    const rclcpp::Time capture_time(
+      static_cast<std::int64_t>(header.capture_realtime_ns), RCL_SYSTEM_TIME);
+    ros_header.stamp = static_cast<builtin_interfaces::msg::Time>(capture_time);
     ros_header.frame_id = frame_id_;
     auto image = cv_bridge::CvImage(
       ros_header, sensor_msgs::image_encodings::BGR8, decoded).toImageMsg();
