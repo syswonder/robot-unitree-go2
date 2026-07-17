@@ -769,6 +769,17 @@
     <parent link="radar" />
     <child link="utlidar_lidar" />
   </joint>
+  <!--
+    Livox Mid-360 User Manual v1.2: the embedded IMU axes are aligned
+    with the point-cloud coordinates and its chip origin is
+    (11.0 mm, 23.29 mm, -44.12 mm) in that frame.
+  -->
+  <link name="utlidar_imu" />
+  <joint name="utlidar_lidar_to_utlidar_imu" type="fixed">
+    <origin xyz="0.011 0.02329 -0.04412" rpy="0 0 0" />
+    <parent link="utlidar_lidar" />
+    <child link="utlidar_imu" />
+  </joint>
   <joint name="front_camera_joint" type="fixed">
     <origin rpy="0 0 0" xyz="0.32715 -0.00003 0.04297" />
       <parent link="base" />

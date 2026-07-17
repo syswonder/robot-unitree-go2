@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 import yaml
 
@@ -23,6 +24,22 @@ class DescriptionRuntimeTests(unittest.TestCase):
         self.assertEqual(root, "base_link")
         self.assertGreater(links, 20)
         self.assertGreater(joints, 20)
+
+    def test_mid360_imu_frame_uses_vendor_extrinsic(self) -> None:
+        model = ET.fromstring(PINNED.read_text(encoding="utf-8"))
+        self.assertIsNotNone(model.find("./link[@name='utlidar_lidar']"))
+        self.assertIsNotNone(model.find("./link[@name='utlidar_imu']"))
+
+        joint = model.find("./joint[@name='utlidar_lidar_to_utlidar_imu']")
+        self.assertIsNotNone(joint)
+        self.assertEqual(joint.attrib["type"], "fixed")
+        self.assertEqual(joint.find("parent").attrib["link"], "utlidar_lidar")
+        self.assertEqual(joint.find("child").attrib["link"], "utlidar_imu")
+        self.assertEqual(
+            joint.find("origin").attrib["xyz"],
+            "0.011 0.02329 -0.04412",
+        )
+        self.assertEqual(joint.find("origin").attrib["rpy"], "0 0 0")
 
     def test_exact_pinned_model_is_required(self) -> None:
         text = PINNED.read_text(encoding="utf-8")
