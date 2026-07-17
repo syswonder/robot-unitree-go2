@@ -39,6 +39,11 @@ def digest(path: Path) -> str:
 
 
 class TimeProbeRecoveryTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        (ROOT / "logs").mkdir(parents=True, exist_ok=True)
+
     def make_evidence(self, directory: Path) -> tuple[Path, Path]:
         metadata = {
             "schema_version": 1,
