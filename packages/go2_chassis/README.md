@@ -44,6 +44,15 @@ written below `rbnx-build/data`; the Unix socket uses a short per-package path
 below `/tmp`. See `CAPABILITY.md` for every gate required before any future
 physical motion test.
 
+With `allow_motion=false`, the adapter has a strictly passive ROS graph. It
+does not construct a `SOCK_SEQPACKET` client, subscribe to `/cmd_vel`, expose an
+arm service, create a control timer, or attempt a daemon disarm during
+shutdown. Only state subscriptions and the validated odometry, TF, IMU, status,
+and diagnostics outputs exist. Motion-control entities are created together
+only after `allow_motion=true` has passed the provider's independent runtime
+acknowledgement gates; the existing explicit arm, state, timestamp, limit, and
+watchdog gates still apply afterward.
+
 Every accepted state message must carry a well-formed, non-zero source
 timestamp within `0.20 s` behind to `0.05 s` ahead of the adapter's ROS clock.
 Rejected zero, stale, or future-dated samples neither refresh the motion

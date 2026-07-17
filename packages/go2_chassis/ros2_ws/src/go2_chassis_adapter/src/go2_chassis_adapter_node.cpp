@@ -32,6 +32,7 @@
 #include "unitree_go/msg/sport_mode_state.hpp"
 
 #include "go2_chassis/protocol.hpp"
+#include "go2_chassis/runtime_graph.hpp"
 #include "go2_chassis/safety_guard.hpp"
 
 namespace go2_chassis {
@@ -186,15 +187,12 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
         declare_parameter<std::string>("sport_state_topic", "/sportmodestate");
     sport_state_fallback_topic_ = declare_parameter<std::string>(
         "state_fallback_topic", "/lf/sportmodestate");
-    cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
     odom_topic_ = declare_parameter<std::string>("odom_topic", "/odom");
     imu_topic_ = declare_parameter<std::string>("imu_topic", "/imu/data");
     status_topic_ =
         declare_parameter<std::string>("status_topic", "/go2_chassis/status");
     diagnostics_topic_ = declare_parameter<std::string>(
         "diagnostics_topic", "/diagnostics");
-    arm_service_name_ = declare_parameter<std::string>(
-        "arm_service", "/go2_chassis/arm");
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
     imu_frame_ = declare_parameter<std::string>("imu_frame", "imu");
@@ -209,10 +207,6 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
     if (!Finite(max_position_jump_m_) || max_position_jump_m_ <= 0.0) {
       throw std::runtime_error("max_position_jump_m must be positive");
     }
-    const std::string socket_path = declare_parameter<std::string>(
-        "sdk_socket", "/tmp/robonix-go2-disabled.sock");
-    ipc_ = std::make_unique<SeqpacketClient>(socket_path);
-
     odom_publisher_ = create_publisher<nav_msgs::msg::Odometry>(odom_topic_, 10);
     imu_publisher_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, 10);
     status_publisher_ = create_publisher<std_msgs::msg::String>(status_topic_, 10);
@@ -239,6 +233,57 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
                 OnSportModeState(*message, false);
               });
     }
+    const RuntimeGraphPlan graph_plan = RuntimeGraphPlan::For(allow_motion_);
+    if (!graph_plan.is_consistent()) {
+      throw std::logic_error("incomplete chassis motion-control graph plan");
+    }
+    if (graph_plan.has_complete_motion_control_graph()) {
+      InitializeMotionControlGraph();
+    }
+    diagnostics_timer_ = create_wall_timer(
+        std::chrono::milliseconds(200), [this]() { PublishDiagnostics(); });
+
+    if (allow_motion_) {
+      RCLCPP_WARN(get_logger(),
+                  "Go2 chassis adapter started CONFIGURED-BUT-DISARMED. No "
+                  "motion can occur without an enabled SDK daemon and "
+                  "explicit arm service call.");
+    } else {
+      RCLCPP_INFO(get_logger(),
+                  "Go2 chassis adapter started in PASSIVE mode: no IPC client, "
+                  "cmd_vel subscription, arm service, or control timer exists.");
+    }
+  }
+
+  ~Go2ChassisAdapterNode() override {
+    if (motion_control_graph_initialized_ && allow_motion_) {
+      (void)BestEffortDaemonDisarm();
+    }
+  }
+
+ private:
+  void InitializeMotionControlGraph() {
+    if (!allow_motion_) {
+      throw std::logic_error(
+          "refusing to initialize motion-control graph while motion is disabled");
+    }
+
+    cmd_vel_topic_ =
+        declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
+    arm_service_name_ = declare_parameter<std::string>(
+        "arm_service", "/go2_chassis/arm");
+    const std::string socket_path = declare_parameter<std::string>(
+        "sdk_socket", "/tmp/robonix-go2-disabled.sock");
+    const double requested_control_rate =
+        declare_parameter<double>("control_rate_hz", 50.0);
+    if (!Finite(requested_control_rate) || requested_control_rate <= 0.0) {
+      throw std::runtime_error("control_rate_hz must be finite and positive");
+    }
+    const double control_rate =
+        std::clamp(requested_control_rate, 10.0, 100.0);
+    control_period_sec_ = 1.0 / control_rate;
+
+    ipc_ = std::make_unique<SeqpacketClient>(socket_path);
     cmd_vel_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
         cmd_vel_topic_, rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
         [this](const geometry_msgs::msg::Twist::SharedPtr message) {
@@ -250,31 +295,14 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
                std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
           OnArmRequest(request->data, *response);
         });
-
-    const double requested_control_rate =
-        declare_parameter<double>("control_rate_hz", 50.0);
-    if (!Finite(requested_control_rate) || requested_control_rate <= 0.0) {
-      throw std::runtime_error("control_rate_hz must be finite and positive");
-    }
-    const double control_rate =
-        std::clamp(requested_control_rate, 10.0, 100.0);
-    control_period_sec_ = 1.0 / control_rate;
-    const auto control_period = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::duration<double>(control_period_sec_));
+    const auto control_period =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::duration<double>(control_period_sec_));
     control_timer_ = create_wall_timer(
         control_period, [this]() { OnControlTimer(); });
-    diagnostics_timer_ = create_wall_timer(
-        std::chrono::milliseconds(200), [this]() { PublishDiagnostics(); });
-
-    RCLCPP_WARN(get_logger(),
-                "Go2 chassis adapter started with motion=%s. No motion can occur "
-                "without an enabled SDK daemon and explicit arm service call.",
-                allow_motion_ ? "CONFIGURED-BUT-DISARMED" : "DISABLED");
+    motion_control_graph_initialized_ = true;
   }
 
-  ~Go2ChassisAdapterNode() override { BestEffortDaemonDisarm(); }
-
- private:
   GuardConfig DeclareGuardConfig() {
     GuardConfig config;
     config.allow_motion = declare_parameter<bool>("allow_motion", false);
@@ -541,6 +569,11 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
 
   void OnArmRequest(bool arm,
                     std_srvs::srv::SetBool::Response &response) {
+    if (!allow_motion_ || !motion_control_graph_initialized_) {
+      response.success = false;
+      response.message = "motion-control graph is disabled";
+      return;
+    }
     std::string message;
     if (arm) {
       response.success = guard_->RequestArm(SteadyNowSec(), &message);
@@ -558,11 +591,11 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
   }
 
   void OnControlTimer() {
-    const GuardDecision decision =
-        guard_->Tick(SteadyNowSec(), control_period_sec_);
-    if (!allow_motion_) {
+    if (!allow_motion_ || !motion_control_graph_initialized_) {
       return;
     }
+    const GuardDecision decision =
+        guard_->Tick(SteadyNowSec(), control_period_sec_);
     if (decision.state == GuardState::kFault) {
       (void)BestEffortDaemonDisarm();
       return;
@@ -605,6 +638,10 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
   }
 
   bool BestEffortDaemonDisarm() {
+    if (!allow_motion_ || !motion_control_graph_initialized_) {
+      daemon_armed_ = false;
+      return true;
+    }
     if (!daemon_armed_ || ipc_ == nullptr) {
       daemon_armed_ = false;
       if (ipc_ != nullptr) {
@@ -715,6 +752,7 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
   }
 
   bool allow_motion_{false};
+  bool motion_control_graph_initialized_{false};
   bool daemon_armed_{false};
   bool last_output_stopped_{true};
   bool last_state_valid_{false};

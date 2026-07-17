@@ -65,6 +65,88 @@ class StaticSafetyTest(unittest.TestCase):
         self.assertIn("source_stamp_diagnostics_.fault_since_last_report()", node)
         self.assertIn("source_stamp_diagnostics_.MarkReported()", node)
 
+    def test_passive_adapter_constructs_no_motion_control_entities(self) -> None:
+        node = (
+            ROOT
+            / "ros2_ws"
+            / "src"
+            / "go2_chassis_adapter"
+            / "src"
+            / "go2_chassis_adapter_node.cpp"
+        ).read_text()
+        constructor = node[
+            node.index("Go2ChassisAdapterNode()") : node.index(
+                "~Go2ChassisAdapterNode()"
+            )
+        ]
+        initializer = node[
+            node.index("void InitializeMotionControlGraph()") : node.index(
+                "GuardConfig DeclareGuardConfig()"
+            )
+        ]
+
+        self.assertIn(
+            "if (graph_plan.has_complete_motion_control_graph())", constructor
+        )
+        self.assertIn("if (!graph_plan.is_consistent())", constructor)
+        self.assertIn("InitializeMotionControlGraph();", constructor)
+        for entity_creation in (
+            "std::make_unique<SeqpacketClient>",
+            "create_subscription<geometry_msgs::msg::Twist>",
+            "create_service<std_srvs::srv::SetBool>",
+            "control_timer_ = create_wall_timer",
+        ):
+            self.assertNotIn(entity_creation, constructor)
+            self.assertEqual(node.count(entity_creation), 1)
+            self.assertIn(entity_creation, initializer)
+
+        destructor = node[
+            node.index("~Go2ChassisAdapterNode()") : node.index(
+                "void InitializeMotionControlGraph()"
+            )
+        ]
+        self.assertIn(
+            "if (motion_control_graph_initialized_ && allow_motion_)", destructor
+        )
+        self.assertIn("BestEffortDaemonDisarm()", destructor)
+        self.assertIn("if (!allow_motion_)", initializer)
+
+        arm_handler = node[
+            node.index("void OnArmRequest(") : node.index("void OnControlTimer()")
+        ]
+        control_handler = node[
+            node.index("void OnControlTimer()") : node.index(
+                "void HandleIpcFault("
+            )
+        ]
+        disarm_handler = node[
+            node.index("bool BestEffortDaemonDisarm()") : node.index(
+                "void PublishDiagnostics()"
+            )
+        ]
+        fail_closed_check = "!allow_motion_ || !motion_control_graph_initialized_"
+        self.assertIn(fail_closed_check, arm_handler)
+        self.assertIn(fail_closed_check, control_handler)
+        self.assertIn(fail_closed_check, disarm_handler)
+
+    def test_runtime_graph_policy_is_fail_closed(self) -> None:
+        policy = (
+            ROOT / "include" / "go2_chassis" / "runtime_graph.hpp"
+        ).read_text()
+        self.assertIn("static constexpr RuntimeGraphPlan For(bool allow_motion)", policy)
+        for field in (
+            "seqpacket_client",
+            "cmd_vel_subscription",
+            "arm_service",
+            "control_timer",
+        ):
+            self.assertIn(field, policy)
+        test = (ROOT / "tests" / "runtime_graph_test.cpp").read_text()
+        self.assertIn("RuntimeGraphPlan::For(false)", test)
+        self.assertIn("!passive.has_motion_control_entities()", test)
+        self.assertIn("RuntimeGraphPlan::For(true)", test)
+        self.assertIn("motion_enabled.has_complete_motion_control_graph()", test)
+
     def test_motion_state_requires_progress_and_reverse_is_not_forwarded(self) -> None:
         guard = (ROOT / "include" / "go2_chassis" / "safety_guard.hpp").read_text()
         daemon = (ROOT / "include" / "go2_chassis" / "daemon_core.hpp").read_text()

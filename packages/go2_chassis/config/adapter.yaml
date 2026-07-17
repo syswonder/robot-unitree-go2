@@ -5,6 +5,8 @@ go2_chassis_adapter:
     allow_motion: false
     sport_state_topic: /sportmodestate
     state_fallback_topic: /lf/sportmodestate
+    # The following control-side names/rate remain inert while allow_motion is
+    # false: the passive adapter does not declare or construct their entities.
     cmd_vel_topic: /cmd_vel
     odom_topic: /odom
     imu_topic: /imu/data
