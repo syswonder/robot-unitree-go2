@@ -21,9 +21,10 @@ class JetsonReadonlyProfileTest(unittest.TestCase):
 
     def test_dockerfile_has_an_arm64_cpu_only_allowlist(self) -> None:
         dockerfile = self.read("Dockerfile")
-        self.assertGreaterEqual(
-            dockerfile.count("FROM --platform=linux/arm64"), 2
-        )
+        self.assertEqual(dockerfile.count("FROM --platform=linux/arm64"), 1)
+        self.assertIn("AS verified_base", dockerfile)
+        self.assertIn("FROM verified_base AS builder", dockerfile)
+        self.assertIn("FROM verified_base AS runtime", dockerfile)
         self.assertIn("ARG ROS_IMAGE", dockerfile)
         self.assertNotRegex(dockerfile, r"ARG ROS_IMAGE\s*=")
         self.assertIn("NVIDIA_VISIBLE_DEVICES=void", dockerfile)
@@ -60,6 +61,43 @@ class JetsonReadonlyProfileTest(unittest.TestCase):
         self.assertEqual(dockerfile.count("Acquire::Retries=5"), 4)
         self.assertEqual(dockerfile.count("Acquire::http::Timeout=30"), 4)
         self.assertEqual(dockerfile.count("Acquire::https::Timeout=30"), 4)
+        self.assertEqual(
+            dockerfile.count("APT::Update::Error-Mode=any"), 2
+        )
+        self.assertEqual(
+            dockerfile.count(
+                "id=robonix-go2-jammy-apt-archives-arm64,"
+                "target=/var/cache/apt,sharing=locked"
+            ),
+            2,
+        )
+        self.assertEqual(
+            dockerfile.count(
+                "id=robonix-go2-jammy-apt-state-arm64,"
+                "target=/var/lib/apt,sharing=locked"
+            ),
+            2,
+        )
+        self.assertEqual(
+            dockerfile.count(
+                "mv /etc/apt/apt.conf.d/docker-clean /tmp/docker-clean"
+            ),
+            2,
+        )
+        self.assertEqual(
+            dockerfile.count(
+                "mv /tmp/docker-clean /etc/apt/apt.conf.d/docker-clean"
+            ),
+            2,
+        )
+        self.assertIn(
+            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/",
+            dockerfile,
+        )
+        self.assertIn(
+            "URIs: https://packages.ros.org/ros2/ubuntu",
+            dockerfile,
+        )
 
     def test_chassis_include_copy_matches_adapter_relative_include(self) -> None:
         dockerfile = self.read("Dockerfile")

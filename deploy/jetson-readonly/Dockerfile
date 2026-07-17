@@ -3,16 +3,53 @@
 # separately in the final image labels.
 ARG ROS_IMAGE
 
-FROM --platform=linux/arm64 ${ROS_IMAGE} AS builder
+FROM --platform=linux/arm64 ${ROS_IMAGE} AS verified_base
+
+ARG TARGETARCH
+
+RUN test "${TARGETARCH}" = "arm64"
+RUN grep -Fq \
+        'http://ports.ubuntu.com/ubuntu-ports/' \
+        /etc/apt/sources.list \
+    && test "$(readlink -f /etc/apt/sources.list.d/ros2.sources)" = \
+        /usr/share/ros-apt-source/ros2.sources \
+    && grep -Fq \
+        'URIs: http://packages.ros.org/ros2/ubuntu' \
+        /usr/share/ros-apt-source/ros2.sources \
+    && sed -i \
+        's|http://ports.ubuntu.com/ubuntu-ports/|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/|g' \
+        /etc/apt/sources.list \
+    && sed -i \
+        's|URIs: http://packages.ros.org/ros2/ubuntu|URIs: https://packages.ros.org/ros2/ubuntu|' \
+        /usr/share/ros-apt-source/ros2.sources \
+    && ! grep -Fq \
+        'http://ports.ubuntu.com/ubuntu-ports/' \
+        /etc/apt/sources.list \
+    && ! grep -Fq \
+        'URIs: http://packages.ros.org/ros2/ubuntu' \
+        /usr/share/ros-apt-source/ros2.sources \
+    && grep -Fq \
+        'https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/' \
+        /etc/apt/sources.list \
+    && grep -Fq \
+        'URIs: https://packages.ros.org/ros2/ubuntu' \
+        /usr/share/ros-apt-source/ros2.sources
+
+FROM verified_base AS builder
 
 ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN test "${TARGETARCH}" = "arm64"
-RUN apt-get \
+RUN --mount=type=cache,id=robonix-go2-jammy-apt-archives-arm64,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=robonix-go2-jammy-apt-state-arm64,target=/var/lib/apt,sharing=locked \
+    test -f /etc/apt/apt.conf.d/docker-clean \
+    && mv /etc/apt/apt.conf.d/docker-clean /tmp/docker-clean \
+    && apt-get \
         -o Acquire::Retries=5 \
         -o Acquire::http::Timeout=30 \
         -o Acquire::https::Timeout=30 \
+        -o APT::Update::Error-Mode=any \
         update \
     && apt-get \
         -o Acquire::Retries=5 \
@@ -36,7 +73,7 @@ RUN apt-get \
         ros-humble-std-srvs \
         ros-humble-tf2 \
         ros-humble-tf2-ros \
-    && rm -rf /var/lib/apt/lists/*
+    && mv /tmp/docker-clean /etc/apt/apt.conf.d/docker-clean
 
 WORKDIR /work/ros2/src
 
@@ -81,7 +118,7 @@ RUN cmake \
     && ! strings /opt/robonix/camera/bin/go2_camera_daemon \
          | grep -E '/api/sport/request|(^|/)lowcmd($|[^[:alnum:]_])'
 
-FROM --platform=linux/arm64 ${ROS_IMAGE} AS runtime
+FROM verified_base AS runtime
 
 ARG TARGETARCH
 ARG VCS_REF=unknown
@@ -90,10 +127,15 @@ ARG BASE_IMAGE_UPSTREAM_DIGEST=unknown
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN test "${TARGETARCH}" = "arm64"
-RUN apt-get \
+RUN --mount=type=cache,id=robonix-go2-jammy-apt-archives-arm64,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=robonix-go2-jammy-apt-state-arm64,target=/var/lib/apt,sharing=locked \
+    test -f /etc/apt/apt.conf.d/docker-clean \
+    && mv /etc/apt/apt.conf.d/docker-clean /tmp/docker-clean \
+    && apt-get \
         -o Acquire::Retries=5 \
         -o Acquire::http::Timeout=30 \
         -o Acquire::https::Timeout=30 \
+        -o APT::Update::Error-Mode=any \
         update \
     && apt-get \
         -o Acquire::Retries=5 \
@@ -124,7 +166,7 @@ RUN apt-get \
            exit 1; \
          fi; \
        done \
-    && rm -rf /var/lib/apt/lists/*
+    && mv /tmp/docker-clean /etc/apt/apt.conf.d/docker-clean
 
 RUN groupadd --gid 10001 robonix \
     && useradd \
@@ -159,6 +201,7 @@ LABEL org.opencontainers.image.title="Robonix Go2 Jetson read-only runtime" \
       org.opencontainers.image.base.name="docker.io/library/ros:humble-ros-base-jammy" \
       org.opencontainers.image.base.digest="${BASE_IMAGE_UPSTREAM_DIGEST}" \
       io.robonix.go2.base.image-id="${BASE_IMAGE_ID}" \
+      io.robonix.go2.apt.ubuntu-mirror="https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/" \
       io.robonix.go2.profile="jetson-readonly" \
       io.robonix.go2.motion="disabled"
 

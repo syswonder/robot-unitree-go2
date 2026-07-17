@@ -83,6 +83,16 @@ validates their ports.  The laptop-only `127.0.0.1` proxy is not automatically
 the NX loopback; establish the approved tunnel on the NX first or unset the
 proxy variables.
 
+The build replaces the pinned base image's plain-HTTP Ubuntu Ports endpoint
+with the HTTPS Tsinghua University Ubuntu Ports mirror registered by Ubuntu as
+an official mirror, and upgrades the ROS repository URL to HTTPS.  APT's
+signed metadata and package verification remain enabled.  Builder and runtime
+package downloads use the same locked BuildKit cache, so the two stages do not
+compete for a small proxy and successfully downloaded archives survive a
+failed build attempt.  Those cache mounts are builder-local and are never
+copied into the runtime image.  Network operations still have bounded retries
+and timeouts.
+
 Then run from the repository root on the JetPack 5 host:
 
 ```bash
