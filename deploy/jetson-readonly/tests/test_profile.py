@@ -95,7 +95,7 @@ class JetsonReadonlyProfileTest(unittest.TestCase):
             dockerfile,
         )
         self.assertIn(
-            "URIs: https://packages.ros.org/ros2/ubuntu",
+            "URIs: https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu",
             dockerfile,
         )
 

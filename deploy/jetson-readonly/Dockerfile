@@ -20,7 +20,7 @@ RUN grep -Fq \
         's|http://ports.ubuntu.com/ubuntu-ports/|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/|g' \
         /etc/apt/sources.list \
     && sed -i \
-        's|URIs: http://packages.ros.org/ros2/ubuntu|URIs: https://packages.ros.org/ros2/ubuntu|' \
+        's|URIs: http://packages.ros.org/ros2/ubuntu|URIs: https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu|' \
         /usr/share/ros-apt-source/ros2.sources \
     && ! grep -Fq \
         'http://ports.ubuntu.com/ubuntu-ports/' \
@@ -32,7 +32,7 @@ RUN grep -Fq \
         'https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/' \
         /etc/apt/sources.list \
     && grep -Fq \
-        'URIs: https://packages.ros.org/ros2/ubuntu' \
+        'URIs: https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu' \
         /usr/share/ros-apt-source/ros2.sources
 
 FROM verified_base AS builder
@@ -202,6 +202,7 @@ LABEL org.opencontainers.image.title="Robonix Go2 Jetson read-only runtime" \
       org.opencontainers.image.base.digest="${BASE_IMAGE_UPSTREAM_DIGEST}" \
       io.robonix.go2.base.image-id="${BASE_IMAGE_ID}" \
       io.robonix.go2.apt.ubuntu-mirror="https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/" \
+      io.robonix.go2.apt.ros-mirror="https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu" \
       io.robonix.go2.profile="jetson-readonly" \
       io.robonix.go2.motion="disabled"
 

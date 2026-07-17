@@ -85,13 +85,13 @@ proxy variables.
 
 The build replaces the pinned base image's plain-HTTP Ubuntu Ports endpoint
 with the HTTPS Tsinghua University Ubuntu Ports mirror registered by Ubuntu as
-an official mirror, and upgrades the ROS repository URL to HTTPS.  APT's
-signed metadata and package verification remain enabled.  Builder and runtime
-package downloads use the same locked BuildKit cache, so the two stages do not
-compete for a small proxy and successfully downloaded archives survive a
-failed build attempt.  Those cache mounts are builder-local and are never
-copied into the runtime image.  Network operations still have bounded retries
-and timeouts.
+an official mirror, and uses Tsinghua's documented HTTPS ROS 2 mirror.  APT's
+embedded ROS key, signed metadata, and package verification remain enabled.
+Builder and runtime package downloads use the same locked BuildKit cache, so
+the two stages do not compete for a small proxy and successfully downloaded
+archives survive a failed build attempt.  Those cache mounts are builder-local
+and are never copied into the runtime image.  Network operations still have
+bounded retries and timeouts.
 
 Then run from the repository root on the JetPack 5 host:
 
