@@ -116,6 +116,73 @@ void TestGuardPreparationLimitsAndFaultLatch() {
 }
 
 void TestSourceStampLivenessFailClosed() {
+  constexpr std::uint64_t max_age_ns = 200'000'000ULL;
+  constexpr std::uint64_t max_future_skew_ns = 50'000'000ULL;
+  constexpr std::int64_t reference_ns = 1'000'000'000'000LL;
+  using Freshness = go2_chassis::SourceStampFreshness;
+
+  assert(!go2_chassis::SourceStampStatusIsFault("not_received"));
+  assert(!go2_chassis::SourceStampStatusIsFault("fresh"));
+  assert(go2_chassis::SourceStampStatusIsFault("zero"));
+  assert(go2_chassis::SourceStampStatusIsFault("malformed"));
+  assert(go2_chassis::SourceStampStatusIsFault("too_old"));
+  assert(go2_chassis::SourceStampStatusIsFault("too_far_in_future"));
+  assert(go2_chassis::SourceStampStatusIsFault("non_monotonic"));
+
+  go2_chassis::SourceStampDiagnosticTracker stamp_diagnostics;
+  assert(stamp_diagnostics.latest_status() == "not_received");
+  assert(!stamp_diagnostics.active_fault());
+  assert(!stamp_diagnostics.fault_since_last_report());
+  stamp_diagnostics.Observe("too_old");
+  assert(stamp_diagnostics.active_fault());
+  assert(stamp_diagnostics.fault_since_last_report());
+  stamp_diagnostics.Observe("fresh");
+  assert(!stamp_diagnostics.active_fault());
+  assert(stamp_diagnostics.fault_since_last_report());
+  assert(stamp_diagnostics.last_fault_status() == "too_old");
+  assert(stamp_diagnostics.total_faults() == 1U);
+  stamp_diagnostics.MarkReported();
+  assert(!stamp_diagnostics.fault_since_last_report());
+
+  assert(go2_chassis::ValidateSourceStamp(
+             0U, reference_ns, max_age_ns, max_future_skew_ns) ==
+         Freshness::kZero);
+  assert(go2_chassis::ValidateSourceStamp(
+             static_cast<std::uint64_t>(reference_ns), 0, max_age_ns,
+             max_future_skew_ns) == Freshness::kReferenceClockInvalid);
+  assert(go2_chassis::ValidateSourceStamp(
+             static_cast<std::uint64_t>(reference_ns), -1, max_age_ns,
+             max_future_skew_ns) == Freshness::kReferenceClockInvalid);
+  assert(go2_chassis::ValidateSourceStamp(
+             static_cast<std::uint64_t>(reference_ns) - max_age_ns,
+             reference_ns, max_age_ns, max_future_skew_ns) ==
+         Freshness::kFresh);
+  assert(go2_chassis::ValidateSourceStamp(
+             static_cast<std::uint64_t>(reference_ns) - max_age_ns - 1U,
+             reference_ns, max_age_ns, max_future_skew_ns) ==
+         Freshness::kTooOld);
+  assert(go2_chassis::ValidateSourceStamp(
+             static_cast<std::uint64_t>(reference_ns) + max_future_skew_ns,
+             reference_ns, max_age_ns, max_future_skew_ns) ==
+         Freshness::kFresh);
+  assert(go2_chassis::ValidateSourceStamp(
+             static_cast<std::uint64_t>(reference_ns) +
+                 max_future_skew_ns + 1U,
+             reference_ns, max_age_ns, max_future_skew_ns) ==
+         Freshness::kTooFarInFuture);
+
+  // Reproduce the measured hardware failure class: a monotonically advancing
+  // source clock that is roughly 739 seconds behind is still stale.
+  constexpr std::uint64_t measured_offset_ns = 739'000'000'000ULL;
+  assert(go2_chassis::ValidateSourceStamp(
+             static_cast<std::uint64_t>(reference_ns) - measured_offset_ns,
+             reference_ns, max_age_ns, max_future_skew_ns) ==
+         Freshness::kTooOld);
+  assert(go2_chassis::ValidateSourceStamp(
+             std::numeric_limits<std::uint64_t>::max(), reference_ns,
+             max_age_ns, max_future_skew_ns) ==
+         Freshness::kTooFarInFuture);
+
   go2_chassis::SourceStampTracker motion_stamps;
   assert(!motion_stamps.Accept(0U, true));
   assert(motion_stamps.Accept(100U, true));
@@ -124,7 +191,7 @@ void TestSourceStampLivenessFailClosed() {
   assert(motion_stamps.Accept(101U, true));
 
   go2_chassis::SourceStampTracker readonly_stamps;
-  assert(readonly_stamps.Accept(0U, false));
+  assert(!readonly_stamps.Accept(0U, false));
   assert(readonly_stamps.Accept(42U, false));
   assert(readonly_stamps.Accept(42U, false));
   assert(!readonly_stamps.Accept(41U, false));

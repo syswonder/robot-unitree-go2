@@ -49,6 +49,8 @@ _KNOWN_KEYS = {
     "max_angular_accel_rps2",
     "command_timeout_s",
     "state_timeout_s",
+    "max_source_stamp_age_s",
+    "max_source_stamp_future_skew_s",
     "zero_preamble_s",
     "control_rate_hz",
     "max_position_jump_m",
@@ -245,6 +247,8 @@ class RuntimeConfig:
     max_angular_accel_rps2: float
     command_timeout_s: float
     state_timeout_s: float
+    max_source_stamp_age_s: float
+    max_source_stamp_future_skew_s: float
     zero_preamble_s: float
     control_rate_hz: float
     max_position_jump_m: float
@@ -282,6 +286,10 @@ class RuntimeConfig:
             "sdk_socket": str(self.ipc_socket),
             "allowed_modes": modes,
             "state_timeout_sec": str(self.state_timeout_s),
+            "max_source_stamp_age_sec": str(self.max_source_stamp_age_s),
+            "max_source_stamp_future_skew_sec": str(
+                self.max_source_stamp_future_skew_s
+            ),
             "command_timeout_sec": str(self.command_timeout_s),
             "zero_preparation_sec": str(self.zero_preamble_s),
             "control_rate_hz": str(self.control_rate_hz),
@@ -477,6 +485,20 @@ def normalize_config(
             0.20,
             minimum=0.05,
             maximum=0.50,
+        ),
+        max_source_stamp_age_s=_number(
+            config.get("max_source_stamp_age_s"),
+            "max_source_stamp_age_s",
+            0.20,
+            minimum=0.05,
+            maximum=0.50,
+        ),
+        max_source_stamp_future_skew_s=_number(
+            config.get("max_source_stamp_future_skew_s"),
+            "max_source_stamp_future_skew_s",
+            0.05,
+            minimum=0.0,
+            maximum=0.10,
         ),
         zero_preamble_s=_number(
             config.get("zero_preamble_s"),

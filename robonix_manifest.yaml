@@ -75,6 +75,8 @@ primitive:
       max_angular_accel_rps2: 0.80
       command_timeout_s: 0.25
       state_timeout_s: 0.20
+      max_source_stamp_age_s: 0.20
+      max_source_stamp_future_skew_s: 0.05
       zero_preamble_s: 0.50
 
   - name: go2_sensors

@@ -20,6 +20,10 @@ go2_chassis_adapter:
     # 255 is an impossible sentinel until GO2_ALLOWED_MODES is audited.
     allowed_modes: [255]
     state_timeout_sec: 0.20
+    # Canonical odom/TF/IMU and the motion watchdog share this source-clock
+    # gate. Clock synchronization must be fixed rather than masking stale data.
+    max_source_stamp_age_sec: 0.20
+    max_source_stamp_future_skew_sec: 0.05
     command_timeout_sec: 0.25
     zero_preparation_sec: 0.50
     control_rate_hz: 50.0

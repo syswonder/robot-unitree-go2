@@ -44,7 +44,14 @@ written below `rbnx-build/data`; the Unix socket uses a short per-package path
 below `/tmp`. See `CAPABILITY.md` for every gate required before any future
 physical motion test.
 
-When motion is enabled, accepted state messages must carry a non-zero source
-timestamp that strictly advances; duplicate or regressing timestamps do not
-refresh the state watchdog. Initial linear motion is forward-only: the adapter
-clamps reverse requests to zero and the SDK daemon independently rejects them.
+Every accepted state message must carry a well-formed, non-zero source
+timestamp within `0.20 s` behind to `0.05 s` ahead of the adapter's ROS clock.
+Rejected zero, stale, or future-dated samples neither refresh the motion
+watchdog nor publish canonical odometry, TF, or IMU. Canonical outputs retain
+the validated Unitree source timestamp; they are never restamped with receipt
+time. A detected clock offset must therefore be fixed by synchronizing the
+host/robot clocks, not hidden by restamping or relaxing the gate. When motion
+is enabled, source timestamps must also strictly advance; duplicate or
+regressing timestamps do not refresh the state watchdog. Initial linear motion
+is forward-only: the adapter clamps reverse requests to zero and the SDK daemon
+independently rejects them.

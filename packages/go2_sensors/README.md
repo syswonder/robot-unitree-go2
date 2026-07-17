@@ -24,14 +24,33 @@ The paths above show the root deployment override. The package-only default is
 `/sensors/imu/data`; the provider always declares the endpoint actually
 selected by its delivered config.
 
-The lidar relay copies the complete `PointCloud2` message, including its
-original timestamp and `frame_id`. The IMU relay also copies the complete
-message; `imu.frame_override` is empty by default and should only be set when
-the installed URDF uses a verified equivalent frame name.
+Before publishing either standard output, the relay compares the input ROS
+header timestamp with its ROS clock. A zero timestamp, malformed timestamp,
+sample older than the configured maximum, or sample farther in the future than
+the configured tolerance is rejected. Rejected data never reaches
+`/scanner/cloud` or the standardized IMU output. The lidar relay otherwise
+copies the complete `PointCloud2` message, including its original timestamp and
+`frame_id`. The IMU relay also copies the complete message;
+`imu.frame_override` is empty by default and should only be set when the
+installed URDF uses a verified equivalent frame name.
 
-Both ROS nodes report topic names, frame IDs, observed rates, sample counts,
-age, rejected frames, connection state, and calibration state through
-`diagnostic_msgs/DiagnosticArray` on `/go2/sensors/status`.
+The checked-in navigation-oriented limits are conservative: lidar may be at
+most 0.50 s old, IMU at most 0.20 s old, and either may lead the local clock by
+at most 0.05 s. Configure them independently with
+`lidar.max_stamp_age_seconds`, `lidar.max_future_stamp_offset_seconds`,
+`imu.max_stamp_age_seconds`, and `imu.max_future_stamp_offset_seconds`. Fix a
+clock-synchronization fault instead of widening these bounds to admit delayed
+or replayed data. Runtime overrides may tighten these four limits but cannot
+raise them above the checked-in ceilings; an attempted widening makes the
+relay fail at startup.
+
+Both ROS nodes report topic names, frame IDs, observed rates, received and
+published sample counts, age, rejected frames, connection state, and
+calibration state through `diagnostic_msgs/DiagnosticArray` on
+`/go2/sensors/status`. Timestamp rejection counters distinguish zero, stale,
+future, and malformed stamps. A rejection produces at least one `ERROR`
+diagnostic interval; a continuously invalid stream remains in `ERROR` until a
+fresh sample is accepted.
 
 ## Why the camera uses two processes
 
@@ -141,6 +160,8 @@ The checked-in defaults are in `config/go2_sensors.yaml`:
 - lidar: `/utlidar/cloud` to `/scanner/cloud`;
 - IMU: `/imu/data` to `/scanner/imu` in the root deployment
   (`/sensors/imu/data` package-only default);
+- lidar stamp age/future limits: 0.50 s / 0.05 s;
+- IMU stamp age/future limits: 0.20 s / 0.05 s;
 - camera: `/camera/color/image_raw` plus matching `CameraInfo`;
 - maximum JPEG: 4 MiB, absolute protocol ceiling 16 MiB;
 - maximum decoded image: 4096 × 4096;

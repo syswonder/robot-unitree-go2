@@ -281,6 +281,13 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
     config.state_timeout_sec =
         declare_parameter<double>("state_timeout_sec", 0.20);
     state_timeout_sec_ = config.state_timeout_sec;
+    config.max_source_stamp_age_sec =
+        declare_parameter<double>("max_source_stamp_age_sec", 0.20);
+    config.max_source_stamp_future_skew_sec = declare_parameter<double>(
+        "max_source_stamp_future_skew_sec", 0.05);
+    max_source_stamp_age_sec_ = config.max_source_stamp_age_sec;
+    max_source_stamp_future_skew_sec_ =
+        config.max_source_stamp_future_skew_sec;
     config.command_timeout_sec =
         declare_parameter<double>("command_timeout_sec", 0.25);
     config.zero_preparation_sec =
@@ -304,12 +311,19 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
       throw std::runtime_error("allowed_modes must contain at least one uint8 value");
     }
     if (!Finite(config.state_timeout_sec) ||
+        !Finite(config.max_source_stamp_age_sec) ||
+        !Finite(config.max_source_stamp_future_skew_sec) ||
         !Finite(config.command_timeout_sec) ||
         !Finite(config.zero_preparation_sec) || !Finite(config.max_vx) ||
         !Finite(config.max_vy) || !Finite(config.max_wz) ||
         !Finite(config.max_linear_acceleration) ||
         !Finite(config.max_angular_acceleration) ||
-        config.state_timeout_sec <= 0.0 || config.command_timeout_sec <= 0.0 ||
+        config.state_timeout_sec <= 0.0 ||
+        config.max_source_stamp_age_sec <= 0.0 ||
+        config.max_source_stamp_age_sec > 0.50 ||
+        config.max_source_stamp_future_skew_sec < 0.0 ||
+        config.max_source_stamp_future_skew_sec > 0.10 ||
+        config.command_timeout_sec <= 0.0 ||
         config.zero_preparation_sec < 0.0 || config.max_vx <= 0.0 ||
         config.max_vy < 0.0 || config.max_wz <= 0.0 ||
         config.max_linear_acceleration <= 0.0 ||
@@ -328,6 +342,7 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
   void OnSportModeState(const unitree_go::msg::SportModeState &message,
                         bool is_primary) {
     const double receipt_sec = SteadyNowSec();
+    const rclcpp::Time reference_stamp = now();
     if (!is_primary && last_primary_state_receipt_sec_ > 0.0 &&
                receipt_sec - last_primary_state_receipt_sec_ <=
                    state_timeout_sec_) {
@@ -355,13 +370,34 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
     for (const float value : message.imu_state.accelerometer) {
       valid = valid && Finite(value);
     }
-    valid = valid && Finite(message.yaw_speed) && message.stamp.sec >= 0 &&
-            message.stamp.nanosec < 1'000'000'000U;
+    const bool stamp_encoding_valid =
+        message.stamp.sec >= 0 && message.stamp.nanosec < 1'000'000'000U;
+    valid = valid && Finite(message.yaw_speed) && stamp_encoding_valid;
 
-    const std::uint64_t source_stamp =
-        static_cast<std::uint64_t>(std::max(message.stamp.sec, 0)) *
-            1'000'000'000ULL +
-        message.stamp.nanosec;
+    std::uint64_t source_stamp = 0U;
+    SourceStampFreshness stamp_freshness =
+        SourceStampFreshness::kMalformed;
+    if (stamp_encoding_valid) {
+      source_stamp = static_cast<std::uint64_t>(message.stamp.sec) *
+                         1'000'000'000ULL +
+                     message.stamp.nanosec;
+      const auto max_age_ns = static_cast<std::uint64_t>(
+          max_source_stamp_age_sec_ * 1'000'000'000.0);
+      const auto max_future_skew_ns = static_cast<std::uint64_t>(
+          max_source_stamp_future_skew_sec_ * 1'000'000'000.0);
+      stamp_freshness = ValidateSourceStamp(
+          source_stamp, reference_stamp.nanoseconds(), max_age_ns,
+          max_future_skew_ns);
+    }
+    if (stamp_freshness != SourceStampFreshness::kFresh) {
+      // Source clock validity is a common gate for canonical state and motion
+      // liveness. Rejected samples do not update receipt times, SafetyGuard,
+      // position history, or odom/TF/IMU publishers.
+      source_stamp_diagnostics_.Observe(
+          SourceStampFreshnessName(stamp_freshness));
+      last_state_valid_ = false;
+      return;
+    }
 
     SourceStampTracker &stamp_tracker =
         is_primary ? primary_stamp_tracker_ : fallback_stamp_tracker_;
@@ -369,9 +405,11 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
       // A repeated, zero, or regressing source stamp must not refresh the
       // motion watchdog.  If the adapter is preparing/armed, SafetyGuard will
       // fault once the last genuinely advancing state exceeds its timeout.
+      source_stamp_diagnostics_.Observe("non_monotonic");
       last_state_valid_ = false;
       return;
     }
+    source_stamp_diagnostics_.Observe("fresh");
 
     const int source = is_primary ? 1 : 2;
     if (source != active_state_source_) {
@@ -418,10 +456,9 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
         1.0 - 2.0 * (normalized_qy * normalized_qy +
                      normalized_qz * normalized_qz));
     const double half_yaw = yaw * 0.5;
-    const rclcpp::Time stamp = now();
-
     nav_msgs::msg::Odometry odometry;
-    odometry.header.stamp = stamp;
+    odometry.header.stamp.sec = message.stamp.sec;
+    odometry.header.stamp.nanosec = message.stamp.nanosec;
     odometry.header.frame_id = odom_frame_;
     odometry.child_frame_id = base_frame_;
     odometry.pose.pose.position.x = message.position[0];
@@ -454,7 +491,7 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
     tf_broadcaster_->sendTransform(transform);
 
     sensor_msgs::msg::Imu imu;
-    imu.header.stamp = stamp;
+    imu.header.stamp = odometry.header.stamp;
     imu.header.frame_id = imu_frame_;
     imu.orientation.x = normalized_qx;
     imu.orientation.y = normalized_qy;
@@ -602,12 +639,23 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
                                  ? now_sec - last_state_receipt_sec_
                                  : -1.0;
     const GuardState state = guard_->state();
+    const bool source_stamp_fault =
+        source_stamp_diagnostics_.active_fault() ||
+        source_stamp_diagnostics_.fault_since_last_report();
 
     diagnostic_msgs::msg::DiagnosticStatus status;
     status.name = "go2_chassis_adapter";
     status.hardware_id = "unitree_go2";
     status.message = guard_->reason();
-    if (state == GuardState::kFault) {
+    if (source_stamp_diagnostics_.active_fault()) {
+      status.message = "source timestamp rejected: " +
+                       source_stamp_diagnostics_.latest_status();
+    } else if (source_stamp_diagnostics_.fault_since_last_report()) {
+      status.message =
+          "source timestamp rejection observed since previous diagnostic: " +
+          source_stamp_diagnostics_.last_fault_status();
+    }
+    if (state == GuardState::kFault || source_stamp_fault) {
       status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     } else if (state == GuardState::kDisabled ||
                state == GuardState::kDisarmed || !last_state_valid_) {
@@ -629,11 +677,29 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
         DiagnosticValue("state_age_sec", std::to_string(state_age)));
     status.values.push_back(DiagnosticValue(
         "state_valid", last_state_valid_ ? "true" : "false"));
+    status.values.push_back(DiagnosticValue(
+        "source_stamp_status", source_stamp_diagnostics_.latest_status()));
+    status.values.push_back(DiagnosticValue(
+        "source_stamp_last_fault",
+        source_stamp_diagnostics_.last_fault_status()));
+    status.values.push_back(DiagnosticValue(
+        "source_stamp_rejection_count",
+        std::to_string(source_stamp_diagnostics_.total_faults())));
+    status.values.push_back(DiagnosticValue(
+        "source_stamp_rejections_since_previous_diagnostic",
+        std::to_string(source_stamp_diagnostics_.faults_since_report())));
+    status.values.push_back(DiagnosticValue(
+        "max_source_stamp_age_sec",
+        std::to_string(max_source_stamp_age_sec_)));
+    status.values.push_back(DiagnosticValue(
+        "max_source_stamp_future_skew_sec",
+        std::to_string(max_source_stamp_future_skew_sec_)));
 
     diagnostic_msgs::msg::DiagnosticArray diagnostics;
     diagnostics.header.stamp = now();
     diagnostics.status.push_back(status);
     diagnostics_publisher_->publish(diagnostics);
+    source_stamp_diagnostics_.MarkReported();
 
     std_msgs::msg::String state_message;
     std::ostringstream stream;
@@ -641,7 +707,9 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
            << "; motion_configured=" << (allow_motion_ ? "true" : "false")
            << "; daemon_armed=" << (daemon_armed_ ? "true" : "false")
            << "; sport_mode=" << static_cast<unsigned int>(last_mode_)
-           << "; state_age_sec=" << state_age;
+           << "; state_age_sec=" << state_age
+           << "; source_stamp_status="
+           << source_stamp_diagnostics_.latest_status();
     state_message.data = stream.str();
     status_publisher_->publish(state_message);
   }
@@ -659,6 +727,8 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
   double last_state_receipt_sec_{0.0};
   double last_primary_state_receipt_sec_{0.0};
   double state_timeout_sec_{0.20};
+  double max_source_stamp_age_sec_{0.20};
+  double max_source_stamp_future_skew_sec_{0.05};
   double previous_x_{0.0};
   double previous_y_{0.0};
   double previous_position_receipt_sec_{0.0};
@@ -676,6 +746,7 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
   std::string base_frame_;
   std::string imu_frame_;
   std::string velocity_frame_;
+  SourceStampDiagnosticTracker source_stamp_diagnostics_;
   std::unique_ptr<SafetyGuard> guard_;
   std::unique_ptr<SeqpacketClient> ipc_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;

@@ -41,3 +41,11 @@ g++ \
   "${ROOT}/tests/test_camera_ipc.cpp" \
   -o "${TEMP_DIR}/test_camera_ipc"
 "${TEMP_DIR}/test_camera_ipc"
+
+g++ \
+  -std=c++17 \
+  -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror \
+  -I"${ROOT}/include" \
+  "${ROOT}/tests/test_stamp_guard.cpp" \
+  -o "${TEMP_DIR}/test_stamp_guard"
+"${TEMP_DIR}/test_stamp_guard"

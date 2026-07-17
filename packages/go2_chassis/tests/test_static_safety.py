@@ -14,6 +14,19 @@ class StaticSafetyTest(unittest.TestCase):
         parameters = config["go2_chassis_adapter"]["ros__parameters"]
         self.assertIs(parameters["allow_motion"], False)
         self.assertEqual(parameters["allowed_modes"], [255])
+        self.assertEqual(parameters["max_source_stamp_age_sec"], 0.20)
+        self.assertEqual(parameters["max_source_stamp_future_skew_sec"], 0.05)
+
+        deployment = yaml.safe_load(
+            (ROOT.parents[1] / "robonix_manifest.yaml").read_text()
+        )
+        chassis = next(
+            entry["config"]
+            for entry in deployment["primitive"]
+            if entry["name"] == "go2_chassis"
+        )
+        self.assertEqual(chassis["max_source_stamp_age_s"], 0.20)
+        self.assertEqual(chassis["max_source_stamp_future_skew_s"], 0.05)
 
     def test_cpp_defaults_are_motion_disabled_with_unknown_mode(self) -> None:
         node = (
@@ -26,16 +39,49 @@ class StaticSafetyTest(unittest.TestCase):
         ).read_text()
         self.assertIn('"allowed_modes", {255}', node)
         self.assertIn('"state_fallback_topic", "/lf/sportmodestate"', node)
+        self.assertIn("ValidateSourceStamp(", node)
         self.assertIn("stamp_tracker.Accept(source_stamp, allow_motion_)", node)
+        self.assertLess(
+            node.index("ValidateSourceStamp("),
+            node.index("stamp_tracker.Accept(source_stamp, allow_motion_)"),
+        )
         self.assertLess(
             node.index("stamp_tracker.Accept(source_stamp, allow_motion_)"),
             node.index("last_state_receipt_sec_ = receipt_sec"),
         )
+        self.assertLess(
+            node.index("ValidateSourceStamp("),
+            node.index("guard_->UpdateRobotState(receipt_sec"),
+        )
+        self.assertIn("odometry.header.stamp.sec = message.stamp.sec", node)
+        self.assertIn(
+            "odometry.header.stamp.nanosec = message.stamp.nanosec", node
+        )
+        self.assertIn("imu.header.stamp = odometry.header.stamp", node)
+        self.assertNotIn("odometry.header.stamp = stamp", node)
+        self.assertNotIn("imu.header.stamp = stamp", node)
+        self.assertIn("state == GuardState::kFault || source_stamp_fault", node)
+        self.assertIn('"source timestamp rejected: "', node)
+        self.assertIn("source_stamp_diagnostics_.fault_since_last_report()", node)
+        self.assertIn("source_stamp_diagnostics_.MarkReported()", node)
 
     def test_motion_state_requires_progress_and_reverse_is_not_forwarded(self) -> None:
         guard = (ROOT / "include" / "go2_chassis" / "safety_guard.hpp").read_text()
         daemon = (ROOT / "include" / "go2_chassis" / "daemon_core.hpp").read_text()
         self.assertIn("source_stamp_ns <= last_source_stamp_ns_", guard)
+        self.assertIn("source_stamp_ns == 0U", guard)
+        self.assertIn(
+            "message.error_code == 0U",
+            (
+                ROOT
+                / "ros2_ws"
+                / "src"
+                / "go2_chassis_adapter"
+                / "src"
+                / "go2_chassis_adapter_node.cpp"
+            ).read_text(),
+        )
+        self.assertIn("config_.allowed_modes.count(state_mode_)", guard)
         self.assertIn("std::clamp(velocity.vx, 0.0, config_.max_vx)", guard)
         self.assertIn("packet.vx < 0.0F || packet.vx > config_.max_vx", daemon)
 

@@ -60,6 +60,8 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertFalse(runtime.allow_motion)
         self.assertFalse(runtime.starts_sdk_daemon)
         self.assertEqual(runtime.allowed_modes, (UNKNOWN_MODE,))
+        self.assertEqual(runtime.max_source_stamp_age_s, 0.20)
+        self.assertEqual(runtime.max_source_stamp_future_skew_s, 0.05)
         self.assertTrue(str(runtime.ipc_socket).startswith(
             f"/tmp/robonix-go2-"
         ))
@@ -86,6 +88,8 @@ class RuntimeConfigTest(unittest.TestCase):
             "max_angular_accel_rps2": 0.4,
             "command_timeout_s": 0.2,
             "state_timeout_s": 0.3,
+            "max_source_stamp_age_s": 0.15,
+            "max_source_stamp_future_skew_s": 0.02,
             "zero_preamble_s": 1.0,
         }
         runtime = normalize_config(config, {}, ROOT)
@@ -105,6 +109,8 @@ class RuntimeConfigTest(unittest.TestCase):
             "max_vx:=0.1",
             "max_vy:=0.0",
             "max_wz:=0.2",
+            "max_source_stamp_age_sec:=0.15",
+            "max_source_stamp_future_skew_sec:=0.02",
             "allowed_modes:=[255]",
         ):
             self.assertIn(expected, rendered)
@@ -154,6 +160,10 @@ class RuntimeConfigTest(unittest.TestCase):
             {"max_linear_y_mps": 0.01},
             {"zero_preamble_s": 0.49},
             {"command_timeout_s": float("nan")},
+            {"max_source_stamp_age_s": 0.0},
+            {"max_source_stamp_age_s": 0.51},
+            {"max_source_stamp_future_skew_s": -0.01},
+            {"max_source_stamp_future_skew_s": 0.11},
             {"velocity_frame": "map"},
             {"twist_in_topic": "cmd_vel"},
             {"surprise_motion_flag": True},

@@ -32,6 +32,8 @@ struct Velocity {
 struct GuardConfig {
   bool allow_motion{false};
   double state_timeout_sec{0.20};
+  double max_source_stamp_age_sec{0.20};
+  double max_source_stamp_future_skew_sec{0.05};
   double command_timeout_sec{0.25};
   double zero_preparation_sec{0.50};
   double max_vx{0.25};
@@ -44,6 +46,96 @@ struct GuardConfig {
   // uint8 sentinel prevents motion until read-only auditing supplies modes.
   std::set<std::uint8_t> allowed_modes{255U};
 };
+
+enum class SourceStampFreshness {
+  kFresh,
+  kMalformed,
+  kZero,
+  kReferenceClockInvalid,
+  kTooOld,
+  kTooFarInFuture,
+};
+
+inline const char *SourceStampFreshnessName(SourceStampFreshness freshness) {
+  switch (freshness) {
+    case SourceStampFreshness::kFresh:
+      return "fresh";
+    case SourceStampFreshness::kMalformed:
+      return "malformed";
+    case SourceStampFreshness::kZero:
+      return "zero";
+    case SourceStampFreshness::kReferenceClockInvalid:
+      return "reference_clock_invalid";
+    case SourceStampFreshness::kTooOld:
+      return "too_old";
+    case SourceStampFreshness::kTooFarInFuture:
+      return "too_far_in_future";
+  }
+  return "unknown";
+}
+
+// "not_received" is an expected startup/read-only state. Any other status
+// besides a fresh source stamp is a hard diagnostic fault, even while motion
+// is disabled and the SafetyGuard itself remains DISABLED or DISARMED.
+inline bool SourceStampStatusIsFault(const std::string &status) {
+  return status != "fresh" && status != "not_received";
+}
+
+// Preserve transient source-stamp failures until at least one diagnostics
+// publication observes them. Without this latch, a 300 Hz fresh sample could
+// overwrite a rejection before a 5 Hz diagnostics timer reports it.
+class SourceStampDiagnosticTracker {
+ public:
+  void Observe(std::string status) {
+    latest_status_ = std::move(status);
+    if (SourceStampStatusIsFault(latest_status_)) {
+      last_fault_status_ = latest_status_;
+      ++total_faults_;
+      ++faults_since_report_;
+    }
+  }
+
+  const std::string &latest_status() const { return latest_status_; }
+  const std::string &last_fault_status() const { return last_fault_status_; }
+  std::uint64_t total_faults() const { return total_faults_; }
+  std::uint64_t faults_since_report() const { return faults_since_report_; }
+  bool active_fault() const {
+    return SourceStampStatusIsFault(latest_status_);
+  }
+  bool fault_since_last_report() const { return faults_since_report_ > 0U; }
+  void MarkReported() { faults_since_report_ = 0U; }
+
+ private:
+  std::string latest_status_{"not_received"};
+  std::string last_fault_status_{"none"};
+  std::uint64_t total_faults_{0U};
+  std::uint64_t faults_since_report_{0U};
+};
+
+// Validate an already well-formed source timestamp against the ROS clock used
+// for canonical output. Subtraction is ordered to avoid unsigned underflow.
+// Keeping this ROS-independent makes clock-skew and boundary cases testable
+// without starting a ROS graph or contacting a robot.
+inline SourceStampFreshness ValidateSourceStamp(
+    std::uint64_t source_stamp_ns, std::int64_t reference_stamp_ns,
+    std::uint64_t max_age_ns, std::uint64_t max_future_skew_ns) {
+  if (source_stamp_ns == 0U) {
+    return SourceStampFreshness::kZero;
+  }
+  if (reference_stamp_ns <= 0) {
+    return SourceStampFreshness::kReferenceClockInvalid;
+  }
+
+  const auto reference_ns = static_cast<std::uint64_t>(reference_stamp_ns);
+  if (source_stamp_ns > reference_ns) {
+    return source_stamp_ns - reference_ns > max_future_skew_ns
+               ? SourceStampFreshness::kTooFarInFuture
+               : SourceStampFreshness::kFresh;
+  }
+  return reference_ns - source_stamp_ns > max_age_ns
+             ? SourceStampFreshness::kTooOld
+             : SourceStampFreshness::kFresh;
+}
 
 struct GuardDecision {
   GuardAction action{GuardAction::kNone};
@@ -58,22 +150,22 @@ struct GuardDecision {
 class SourceStampTracker {
  public:
   bool Accept(std::uint64_t source_stamp_ns, bool require_strict_progress) {
+    // Zero can never prove liveness and is rejected in every mode. The
+    // freshness gate above is still mandatory before canonical publication.
+    if (source_stamp_ns == 0U) {
+      return false;
+    }
     if (require_strict_progress) {
-      if (source_stamp_ns == 0U ||
-          (last_source_stamp_ns_ != 0U &&
-           source_stamp_ns <= last_source_stamp_ns_)) {
+      if (last_source_stamp_ns_ != 0U &&
+          source_stamp_ns <= last_source_stamp_ns_) {
         return false;
       }
       last_source_stamp_ns_ = source_stamp_ns;
       return true;
     }
 
-    // Read-only bring-up must remain compatible with firmware that publishes
-    // zero or repeated timestamps while the dog is stationary.  A non-zero
-    // timestamp is still never allowed to move backwards.
-    if (source_stamp_ns == 0U) {
-      return true;
-    }
+    // Read-only bring-up permits repeated, fresh non-zero timestamps while the
+    // dog is stationary. A timestamp is never allowed to move backwards.
     if (last_source_stamp_ns_ != 0U &&
         source_stamp_ns < last_source_stamp_ns_) {
       return false;
