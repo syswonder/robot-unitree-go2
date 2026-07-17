@@ -42,6 +42,18 @@ Unitree SDK client or contact hardware. See
 [known upstream and commissioning limits](docs/KNOWN_LIMITATIONS.md) before
 attempting a build or boot.
 
+To inspect the deterministic Chinese voice-to-dashboard contract proof by
+itself, run:
+
+```bash
+bash scripts/demo_offline_voice_e2e.sh
+```
+
+This command uses fixed in-memory ASR, Pilot and navigation fixtures together
+with the real map-lifecycle guard, landmark resolver, semantic run registry and
+dashboard state. It opens no ROS graph or network socket and has no publisher
+or motion API. A pass proves interface wiring only, not physical navigation.
+
 ## What is ready without hardware
 
 - Deployment/Catalog manifests and Soma robot model.

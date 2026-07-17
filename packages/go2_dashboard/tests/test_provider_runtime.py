@@ -61,6 +61,10 @@ class ProviderRuntimeTests(unittest.TestCase):
                 "map_frame": "lab_map",
                 "base_frame": "go2_base",
                 "log_level": "warning",
+                "browser_voice_enabled": "1",
+                "liaison_endpoint": "127.0.0.1:50081",
+                "audio_bridge_url": "ws://127.0.0.1:60002/client",
+                "browser_mic_provider": "audio_client_bridge",
             }
         )
         environment = config.child_environment(
@@ -83,6 +87,21 @@ class ProviderRuntimeTests(unittest.TestCase):
         self.assertEqual(environment["GO2_DASHBOARD_NAV_STATUS_TOPIC"], "/nav/status")
         self.assertEqual(environment["GO2_DASHBOARD_MAP_FRAME"], "lab_map")
         self.assertEqual(environment["GO2_DASHBOARD_BASE_FRAME"], "go2_base")
+        self.assertEqual(
+            environment["GO2_DASHBOARD_BROWSER_VOICE_ENABLED"], "1"
+        )
+        self.assertEqual(
+            environment["GO2_DASHBOARD_LIAISON_ENDPOINT"],
+            "127.0.0.1:50081",
+        )
+        self.assertEqual(
+            environment["GO2_DASHBOARD_AUDIO_BRIDGE_URL"],
+            "ws://127.0.0.1:60002/client",
+        )
+        self.assertEqual(
+            environment["GO2_DASHBOARD_BROWSER_MIC_PROVIDER"],
+            "audio_client_bridge",
+        )
         self.assertEqual(config.url, "https://go2.example.test/telemetry")
         self.assertEqual(config.health_url, "http://127.0.0.1:9102/healthz")
 
@@ -103,6 +122,12 @@ class ProviderRuntimeTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "127.0.0.1"):
             DashboardConfig.from_mapping({"host": "0.0.0.0"})
+        with self.assertRaisesRegex(ValueError, "exactly 0 or 1"):
+            DashboardConfig.from_mapping({"browser_voice_enabled": "true"})
+        with self.assertRaisesRegex(ValueError, "literal loopback"):
+            DashboardConfig.from_mapping(
+                {"liaison_endpoint": "192.168.123.18:50081"}
+            )
 
     def test_start_and_stop_signal_only_the_created_child(self) -> None:
         clock = _Clock()

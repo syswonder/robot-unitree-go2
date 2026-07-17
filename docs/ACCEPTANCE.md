@@ -19,6 +19,12 @@ watchdog logic. They cannot establish physical calibration, DDS discovery,
 localization quality, obstacle clearance, traction or real stopping distance.
 Those cells remain pending until the hardware checklist is completed.
 
+Run `bash scripts/demo_offline_voice_e2e.sh` for the deterministic offline
+contract proof. It covers ASR final → Liaison/Pilot-equivalent tool selection →
+verified saved Pose/map generation → fake Robonix navigation RUNNING →
+SUCCEEDED → read-only dashboard status, with socket and ROS/motion-surface
+tripwires. Its fixture result must never be reported as a physical pass.
+
 ## First usable-version scope
 
 The target is a pre-mapped laboratory with a saved vending-machine approach

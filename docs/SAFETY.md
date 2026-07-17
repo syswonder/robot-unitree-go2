@@ -11,6 +11,14 @@ The audited Mapping launcher must honor `MAPPING_ENABLE_VIZ=false` without
 probing X11 or invoking `xhost`; build/start reject an upstream revision that
 lacks that contract.
 
+The browser microphone route remains off unless
+`GO2_DASHBOARD_BROWSER_VOICE_ENABLED=1`. Enabling it authorizes only a
+same-origin, in-memory audio handoff to Liaison; it does not authorize motion.
+Keep the dashboard and both downstream endpoints on literal loopback, keep
+Liaison access/voiceprint policy enabled for a physical demonstration, and do
+not set `ROBONIX_LIAISON_VOICE_SAVE_DIR` when recordings must not persist.
+Only one reverse-audio client may be active during the demo.
+
 ## Gate 0 — physical setup
 
 - Go2 is on a level, dry, non-slippery floor with at least 2 m clearance.

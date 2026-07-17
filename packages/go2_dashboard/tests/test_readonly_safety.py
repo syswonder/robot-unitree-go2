@@ -72,11 +72,26 @@ class ReadOnlySafetyTests(unittest.TestCase):
         for literal in forbidden_literals:
             self.assertNotIn(literal, runtime_text)
 
-    def test_web_page_has_no_forms_or_controls(self) -> None:
+    def test_web_page_has_only_the_explicit_liaison_voice_button(self) -> None:
         page = (RUNTIME / "static" / "index.html").read_text(encoding="utf-8").lower()
-        self.assertNotIn("<button", page)
+        self.assertEqual(page.count("<button"), 1)
+        self.assertIn('id="voicebutton"', page)
+        self.assertIn('type="button" disabled', page)
         self.assertNotIn("<form", page)
         self.assertNotIn("<input", page)
+
+    def test_browser_voice_gateway_only_delegates_to_liaison(self) -> None:
+        source = (RUNTIME / "voice_gateway.py").read_text(encoding="utf-8")
+        self.assertIn("RobonixSystemLiaisonVoiceStub", source)
+        self.assertIn("StartVoiceSession", source)
+        for forbidden in (
+            "robonix/service/navigation",
+            "robonix/service/speech/asr",
+            "unitree_sdk2py",
+            "rclpy",
+            "ActionClient",
+        ):
+            self.assertNotIn(forbidden, source)
 
     def test_shell_scripts_do_not_invoke_ros_or_unitree_commands(self) -> None:
         shell_text = "\n".join(

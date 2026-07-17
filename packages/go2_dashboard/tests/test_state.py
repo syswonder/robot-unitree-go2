@@ -75,6 +75,41 @@ class StateTests(unittest.TestCase):
         self.state.set_bridge(running=False, connected=False, error="x" * 1000)
         self.assertEqual(len(self.state.snapshot()["bridge"]["error"]), 400)
 
+    def test_voice_state_is_disabled_by_default_and_session_scoped(self) -> None:
+        voice = self.state.snapshot()["voice"]
+        self.assertFalse(voice["enabled"])
+        self.assertEqual(voice["status"], "disabled")
+        self.assertFalse(voice["direct_robot_control"])
+        self.state.configure_voice(True, {"max_duration_s": 8.0})
+        current = self.state.update_voice(
+            session_id="a" * 32,
+            status="recognized",
+            message="ok",
+            transcript="x" * 500,
+            active=True,
+        )
+        self.assertEqual(len(current["transcript"]), 300)
+        with self.assertRaisesRegex(ValueError, "stale"):
+            self.state.update_voice(
+                session_id="b" * 32,
+                status="pilot",
+                message="wrong session",
+                active=True,
+            )
+        self.state.update_voice(
+            session_id="a" * 32,
+            status="completed",
+            message="done",
+            active=False,
+        )
+        replacement = self.state.update_voice(
+            session_id="b" * 32,
+            status="accepted",
+            message="next",
+            active=True,
+        )
+        self.assertEqual(replacement["session_id"], "b" * 32)
+
 
 if __name__ == "__main__":
     unittest.main()

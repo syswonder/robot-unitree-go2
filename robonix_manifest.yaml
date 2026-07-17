@@ -185,6 +185,13 @@ service:
       odom_topic: /odom
       map_frame: map
       base_frame: base_link
+      # The browser route remains inert unless the local .env value is exactly
+      # 1. It only delegates validated loopback audio to Liaison; all hardware
+      # motion gates remain independent and unchanged.
+      browser_voice_enabled: ${GO2_DASHBOARD_BROWSER_VOICE_ENABLED}
+      liaison_endpoint: 127.0.0.1:50081
+      audio_bridge_url: ws://127.0.0.1:60002/client
+      browser_mic_provider: audio_client_bridge
 
 skill:
   - name: semantic_navigation

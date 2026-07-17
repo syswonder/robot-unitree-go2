@@ -59,4 +59,9 @@ PYTHONPATH="$DEPLOY_DIR/packages/go2_dashboard${PYTHONPATH:+:$PYTHONPATH}" \
     -s "$DEPLOY_DIR/packages/go2_dashboard/tests" -p 'test_*.py'
 python3 -m unittest discover -s "$DEPLOY_DIR/tests" -p 'test_*.py'
 
+# Contract-level voice closed loop. This uses fixed in-memory ASR/Pilot/Nav
+# fixtures and the real semantic/lifecycle/run-state/dashboard cores. It opens
+# no ROS graph or socket and contains no robot command surface.
+python3 "$DEPLOY_DIR/scripts/offline_voice_e2e.py" --compact >/dev/null
+
 echo "[validate] PASS"

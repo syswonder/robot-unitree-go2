@@ -23,6 +23,23 @@ SEMANTIC_STATUSES = frozenset(
     }
 )
 
+VOICE_STATUSES = frozenset(
+    {
+        "disabled",
+        "idle",
+        "accepted",
+        "connecting",
+        "liaison",
+        "recording",
+        "asr",
+        "recognized",
+        "authorized",
+        "pilot",
+        "completed",
+        "failed",
+    }
+)
+
 
 @dataclass(frozen=True)
 class TopicSpec:
@@ -103,6 +120,19 @@ class DashboardState:
             "updated_at": float(wall_fn()),
             "source": "status-api",
             "read_only_effect": True,
+        }
+        self._voice = {
+            "enabled": False,
+            "active": False,
+            "status": "disabled",
+            "session_id": "",
+            "message": "浏览器语音入口未启用",
+            "transcript": "",
+            "updated_at": float(wall_fn()),
+            "limits": {},
+            "delegates_to": "robonix/system/liaison/voice",
+            "direct_robot_control": False,
+            "audio_persisted": False,
         }
 
     def set_bridge(
@@ -188,6 +218,71 @@ class DashboardState:
         with self._lock:
             return copy.deepcopy(self._semantic_task)
 
+    def configure_voice(
+        self, enabled: bool, limits: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Declare the optional Liaison-only browser voice surface."""
+
+        with self._lock:
+            self._voice.update(
+                {
+                    "enabled": bool(enabled),
+                    "active": False,
+                    "status": "idle" if enabled else "disabled",
+                    "session_id": "",
+                    "message": (
+                        "等待浏览器按键录音"
+                        if enabled
+                        else "浏览器语音入口未启用"
+                    ),
+                    "transcript": "",
+                    "updated_at": float(self._wall()),
+                    "limits": copy.deepcopy(dict(limits)),
+                }
+            )
+            return copy.deepcopy(self._voice)
+
+    def voice_status(self) -> dict[str, Any]:
+        with self._lock:
+            return copy.deepcopy(self._voice)
+
+    def update_voice(
+        self,
+        *,
+        session_id: str,
+        status: str,
+        message: str,
+        transcript: str = "",
+        active: bool,
+    ) -> dict[str, Any]:
+        normalized_status = _bounded_text(status, 32).lower()
+        if normalized_status not in VOICE_STATUSES - {"disabled", "idle"}:
+            raise ValueError(f"unsupported browser voice status: {normalized_status}")
+        normalized_session = _bounded_text(session_id, 64)
+        if not normalized_session:
+            raise ValueError("browser voice session id is required")
+        with self._lock:
+            if not self._voice["enabled"]:
+                raise ValueError("browser voice is disabled")
+            current_session = str(self._voice["session_id"])
+            if current_session and current_session != normalized_session:
+                if self._voice["active"] or self._voice["status"] not in {
+                    "completed",
+                    "failed",
+                }:
+                    raise ValueError("stale browser voice session update")
+            self._voice.update(
+                {
+                    "active": bool(active),
+                    "status": normalized_status,
+                    "session_id": normalized_session,
+                    "message": _bounded_text(message, 400),
+                    "transcript": _bounded_text(transcript, 300),
+                    "updated_at": float(self._wall()),
+                }
+            )
+            return copy.deepcopy(self._voice)
+
     def update_semantic_task(self, update: Mapping[str, Any]) -> dict[str, Any]:
         status = _bounded_text(update.get("status"), 32).lower()
         if status not in SEMANTIC_STATUSES:
@@ -254,7 +349,8 @@ class DashboardState:
                 "schema_version": 1,
                 "generated_at": wall_now,
                 "uptime_s": round(max(0.0, now - self._started_monotonic), 3),
-                "read_only": True,
+                "read_only": not bool(self._voice["enabled"]),
+                "telemetry_read_only": True,
                 "bridge": copy.deepcopy(self._bridge),
                 "topics": topics,
                 "camera": copy.deepcopy(self._payload["camera"]),
@@ -265,5 +361,6 @@ class DashboardState:
                 "odom": copy.deepcopy(self._payload["odom"]),
                 "navigation": copy.deepcopy(self._payload["navigation"]),
                 "semantic_task": copy.deepcopy(self._semantic_task),
+                "voice": copy.deepcopy(self._voice),
             }
         return result

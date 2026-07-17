@@ -1,6 +1,6 @@
-# Go2 只读态势面板
+# Go2 遥测与 Liaison 语音面板
 
-这是 Robonix Unitree Go2 部署内的正式只读 Service。Provider 固定为
+这是 Robonix Unitree Go2 部署内的遥测 Service。Provider 固定为
 `Service(id="go2_dashboard", namespace="robonix/service/telemetry/dashboard")`，
 由生命周期回调拥有一个 Web 面板子进程。面板把 ROS 2 数据转换为有界的浏览器预览，单页显示：
 
@@ -13,6 +13,13 @@
 - 由语义导航组件注入的任务显示状态。
 
 本包向 Atlas 注册 lifecycle driver 和只读 status 两条 capability，不提供机器人命令接口。Web 子进程只创建 ROS 订阅和 TF 监听；语义任务接口只更新该进程内的 UI 状态，不调用导航服务。
+
+另有一个**默认关闭**的浏览器 push-to-talk 入口。显式启用后，它只接受
+回环同源页面上传的有界 16 kHz 单声道 PCM WAV，通过本机
+`audio_client_bridge` 交给官方 `robonix/system/liaison/voice` contract。
+Dashboard 不自行做 ASR，不调用 navigation/ROS/Unitree，也不创建 publisher。
+Liaison/Pilot 之后是否接受任务，仍由 Robonix 访问策略、语义解析以及 Go2
+独立运动安全门决定；按钮本身不是运动授权。
 
 ## Robonix 生命周期
 
@@ -92,6 +99,10 @@ bash scripts/stop.sh
 | `log_level` | `info` | Web 日志等级 |
 | `startup_timeout_s` | `8.0` | 等待本地 health endpoint 的秒数 |
 | `stop_timeout_s` | `5.0` | 优雅停止子进程的秒数 |
+| `browser_voice_enabled` | `false` | 必须是 `0`/`1`；父 provider 显式传给 Web child |
+| `liaison_endpoint` | `127.0.0.1:50081` | 固定字面量回环 Liaison endpoint |
+| `audio_bridge_url` | `ws://127.0.0.1:60002/client` | 固定字面量回环 reverse-audio URL |
+| `browser_mic_provider` | `audio_client_bridge` | Liaison voice request 显式 pin 的 mic provider |
 
 为兼容现有 Go2 部署清单，`image_topic` 可作为 `camera_topic` 的别名；若两者同时设置但值不同，INIT 会失败。
 
@@ -115,6 +126,8 @@ bash scripts/stop.sh
 | `GET /api/map.png` | 最近地图预览 |
 | `GET /api/semantic-task` | 当前语义任务显示状态 |
 | `POST /api/semantic-task` | 覆盖语义任务显示状态 |
+| `GET /api/voice` | 浏览器语音开关、限额、内存状态和同源 nonce；关闭时不返回 nonce |
+| `POST /api/voice` | 可选的同源 PCM WAV → Liaison handoff；默认返回 404 |
 
 语义导航组件可以在自身状态变化后写入显示信息。例如，下面只会让 UI 显示“自动售货机”已解析，不会创建 ROS 实体或触发任务：
 
@@ -126,6 +139,50 @@ curl --fail-with-body \
 ```
 
 允许的显示状态为 `idle`、`received`、`resolving`、`resolved`、`navigating`、`succeeded`、`canceled` 和 `failed`。接口没有“执行”字段，也不会把 Pose 转发到 ROS 或 Robonix navigation service。
+
+## 可选浏览器语音入口
+
+仓库 `.env.example` 明确把开关设为 `0`，root manifest 将它映射到 dashboard
+service config，父 provider 复验后再以 `GO2_DASHBOARD_BROWSER_VOICE_ENABLED`
+传给 Web child。唯一启用开关是：
+
+```bash
+export GO2_DASHBOARD_BROWSER_VOICE_ENABLED=1
+```
+
+未设置或设为 `0` 时，UI 按钮不可用，`POST /api/voice` 返回 404；其他拼写
+会使 Web 子进程启动失败，避免意外启用。默认连接保持为
+`127.0.0.1:50081`（Liaison）和
+`ws://127.0.0.1:60002/client`（reverse audio bridge），目标必须是字面量
+IPv4 回环地址，不能改为 NX、Go2 或 LAN 地址。可选的高级覆盖同样会被严格
+验证：
+
+| 环境变量 | 默认 | 硬限制 |
+| --- | --- | --- |
+| `GO2_DASHBOARD_LIAISON_ENDPOINT` | `127.0.0.1:50081` | 字面量回环 `host:port` |
+| `GO2_DASHBOARD_AUDIO_BRIDGE_URL` | `ws://127.0.0.1:60002/client` | `ws`、字面量回环、固定 `/client`、无凭据/查询 |
+| `GO2_DASHBOARD_BROWSER_MIC_PROVIDER` | `audio_client_bridge` | 有界 provider id；显式 pin，禁止 Atlas 静默回退 |
+| `GO2_DASHBOARD_VOICE_MIN_SECONDS` | `0.25` | `0.1..2.0` 且小于最大值 |
+| `GO2_DASHBOARD_VOICE_MAX_SECONDS` | `8.0` | `1.0..10.0` |
+| `GO2_DASHBOARD_VOICE_MAX_UPLOAD_BYTES` | `300000` | `64000..400000`，同时受 PCM 时长限制 |
+| `GO2_DASHBOARD_VOICE_BRIDGE_TIMEOUT_S` | `3.0` | `0.5..5.0` |
+| `GO2_DASHBOARD_VOICE_MIC_TIMEOUT_S` | `6.0` | `1.0..10.0` |
+| `GO2_DASHBOARD_VOICE_SESSION_TIMEOUT_S` | `45.0` | `10.0..60.0` |
+
+请求必须满足全部条件：TCP 客户端、`Host` 和 `Origin` 都是当前 dashboard
+回环 origin；没有 `Forwarded`/`X-Forwarded-For`；`Sec-Fetch-Site`（若有）
+为 `same-origin`；先读取的随机 nonce 必须用自定义 header 回传；必须有准确
+`Content-Length`；MIME 为 `audio/wav` 或 `audio/x-wav`；WAV 必须是
+16 kHz、单声道、16-bit little-endian PCM。一次只允许一个会话，所有网络
+操作有截止时间。音频只存在内存，worker 结束时覆盖并清空；Dashboard 不写
+录音文件。Liaison 自身若配置 `ROBONIX_LIAISON_VOICE_SAVE_DIR`，那是 Liaison
+的独立策略，验收环境应保持未设置。
+
+浏览器 gateway 会在该次会话中临时占用 reverse `audio_client_bridge`。若已有
+另一个 `robonix-client` 音频会话，bridge 的单客户端语义会替换旧连接；因此
+正式演示时只保留一个音频前端。为避免 Dashboard 接收 TTS 音频，voice request
+固定 `tts_enabled=false`；页面只显示 Liaison 事件、识别文本、语义解析和 Nav2
+状态。
 
 ## Atlas status 返回
 

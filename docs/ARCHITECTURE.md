@@ -29,6 +29,15 @@ values after loading local configuration, and a static compatibility gate
 requires the upstream bind-host implementation and container forwarding.
 Scene's debug UI and Mapping's unauthenticated administration UI remain off.
 
+The dashboard's optional browser voice entry is a narrow exception to a
+purely observational UI, not a hardware command surface. It is disabled by
+default and accepts only strict 16 kHz mono PCM WAV from its own loopback
+origin. The handoff path is browser → dashboard memory → the pinned local
+`audio_client_bridge` → `robonix/system/liaison/voice`. Liaison remains the
+only ASR/Pilot entry; the dashboard has no navigation client, ROS publisher,
+or Unitree dependency. The telemetry capabilities remain read-only and the
+independent chassis motion gates are unchanged.
+
 ## State and localization
 
 ```text
