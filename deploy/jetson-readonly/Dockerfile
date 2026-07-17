@@ -9,8 +9,16 @@ ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN test "${TARGETARCH}" = "arm64"
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends \
+RUN apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        update \
+    && apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        install --yes --no-install-recommends \
         binutils \
         build-essential \
         cmake \
@@ -82,8 +90,16 @@ ARG BASE_IMAGE_UPSTREAM_DIGEST=unknown
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN test "${TARGETARCH}" = "arm64"
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends \
+RUN apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        update \
+    && apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        install --yes --no-install-recommends \
         iproute2 \
         ros-humble-cv-bridge \
         ros-humble-diagnostic-msgs \

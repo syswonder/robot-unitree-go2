@@ -52,6 +52,15 @@ class JetsonReadonlyProfileTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, dockerfile)
 
+    def test_dockerfile_bounds_and_retries_package_downloads(self) -> None:
+        dockerfile = self.read("Dockerfile")
+        # Both builder and runtime stages perform an update and an install.
+        # Every networked apt invocation must tolerate transient proxy errors
+        # without waiting indefinitely.
+        self.assertEqual(dockerfile.count("Acquire::Retries=5"), 4)
+        self.assertEqual(dockerfile.count("Acquire::http::Timeout=30"), 4)
+        self.assertEqual(dockerfile.count("Acquire::https::Timeout=30"), 4)
+
     def test_chassis_include_copy_matches_adapter_relative_include(self) -> None:
         dockerfile = self.read("Dockerfile")
         self.assertIn(
