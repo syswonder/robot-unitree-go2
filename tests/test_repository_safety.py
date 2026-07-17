@@ -344,6 +344,28 @@ class RepositorySafetyTest(unittest.TestCase):
                 source = path.read_text(encoding="utf-8")
                 self.assertIsNone(re.search(r"ros2\s+topic\s+pub", source), path)
 
+    def test_nx_audit_is_bounded_and_non_mutating(self) -> None:
+        path = ROOT / "scripts" / "audit_nx_readonly.sh"
+        source = path.read_text(encoding="utf-8")
+        self.assertTrue(os.access(path, os.X_OK))
+        self.assertIn("timeout --signal=INT --kill-after=1s", source)
+        self.assertIn("systemctl is-active --quiet docker.service", source)
+        self.assertIn("--host unix:///var/run/docker.sock", source)
+        self.assertNotIn('run "Docker client/server" docker version', source)
+        self.assertNotIn("DOCKER_HOST", source)
+        self.assertNotIn("DOCKER_CONTEXT", source)
+        self.assertIsNone(re.search(r"(?m)^[ \t]*sudo(?:[ \t]|$)", source))
+        for forbidden in (
+            r"\bapt(?:-get)?\b",
+            r"\bnmcli\s+(?:connection|con)\s+(?:add|modify|delete|up|down)\b",
+            r"\bip\s+(?:addr|route|link)\s+(?:add|del|set|replace)\b",
+            r"\btimedatectl\s+set-",
+            r"\bsystemctl\s+(?:start|stop|restart|enable|disable)\b",
+            r"/(?:etc/shadow|root/\.ssh|home/[^/]+/\.ssh)",
+            r"\b(?:printenv|history)\b",
+        ):
+            self.assertIsNone(re.search(forbidden, source), forbidden)
+
     def test_local_soma_exports_exist_in_package_manifests(self) -> None:
         soma = yaml.safe_load((ROOT / "soma.yaml").read_text(encoding="utf-8"))
         local_packages = {
