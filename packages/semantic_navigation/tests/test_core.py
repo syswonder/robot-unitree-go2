@@ -93,6 +93,25 @@ class LandmarkStoreTest(unittest.TestCase):
                 "实验室大门", expected_map_id="lab_go2", expected_generation=7
             )
 
+    def test_two_distinct_landmarks_in_one_utterance_are_rejected(self) -> None:
+        raw = document()
+        raw["landmarks"].append(
+            {
+                "id": "lab_door",
+                "name": "实验室大门",
+                "aliases": ["大门"],
+                "verified": True,
+                "pose": {"x": 0.0, "y": 1.0, "yaw": 0.0},
+            }
+        )
+        store = LandmarkStore.from_mapping(raw)
+        with self.assertRaisesRegex(LandmarkError, "ambiguous"):
+            store.resolve(
+                "先去实验室大门再去自动售货机",
+                expected_map_id="lab_go2",
+                expected_generation=7,
+            )
+
     def test_non_finite_pose_is_rejected(self) -> None:
         raw = document()
         raw["landmarks"][0]["pose"]["x"] = float("nan")

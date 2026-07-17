@@ -51,6 +51,83 @@ _lock = threading.Lock()
 _config: dict[str, Any] = {}
 _children: list[Any] = []
 _declared = False
+_active = False
+
+
+def _wait_for_healthy_camera_diagnostic(topic: str, timeout_s: float) -> tuple[bool, str]:
+    """Wait for an explicit, current camera quality pass without spawning CLI tools."""
+
+    try:
+        import rclpy
+        from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
+        from rclpy.context import Context
+        from rclpy.node import Node
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    except ImportError as error:
+        return False, f"camera quality observer dependency unavailable: {error}"
+
+    context = Context()
+    node = None
+    passed = threading.Event()
+    last_detail = "no go2_sensors/camera diagnostic received"
+
+    def observe(message: Any) -> None:
+        nonlocal last_detail
+        for status in message.status:
+            if status.name != "go2_sensors/camera":
+                continue
+            values: dict[str, str] = {}
+            duplicate = False
+            for entry in status.values:
+                if entry.key in values:
+                    duplicate = True
+                    break
+                values[entry.key] = entry.value
+            if duplicate:
+                last_detail = "camera diagnostic contains duplicate quality keys"
+                return
+            ready = values.get("quality_ready") == "true"
+            healthy = values.get("healthy") == "true"
+            if (
+                ready
+                and healthy
+                and status.level == DiagnosticStatus.OK
+                and status.message == "camera quality gate passed"
+            ):
+                last_detail = "camera quality gate passed"
+                passed.set()
+                return
+            last_detail = (
+                f"camera quality not ready/healthy: level={status.level}, "
+                f"ready={ready}, healthy={healthy}, detail={status.message}"
+            )
+
+    try:
+        rclpy.init(args=[], context=context)
+        node = Node(f"go2_sensor_quality_gate_{os.getpid()}", context=context)
+        qos = QoSProfile(depth=10)
+        qos.reliability = ReliabilityPolicy.RELIABLE
+        qos.durability = DurabilityPolicy.VOLATILE
+        subscription = node.create_subscription(DiagnosticArray, topic, observe, qos)
+        deadline = time.monotonic() + timeout_s
+        while not passed.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            rclpy.spin_once(node, timeout_sec=min(0.25, remaining))
+        # Keep the subscription alive until after the final spin.
+        del subscription
+        return passed.is_set(), last_detail
+    except Exception as error:
+        return False, f"camera quality observer failed: {type(error).__name__}: {error}"
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if context.ok():
+            context.shutdown()
+
+
+_camera_quality_waiter = _wait_for_healthy_camera_diagnostic
 
 
 def _absolute_topic(value: Any, name: str, default: str) -> str:
@@ -68,6 +145,10 @@ def _positive_float(value: Any, name: str, default: float, maximum: float) -> fl
 
 
 def _normalize_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    source_mode = str(cfg.get("source_mode") or "local")
+    if source_mode not in {"local", "external"}:
+        raise ValueError("source_mode must be exactly 'local' or 'external'")
+
     interface = str(cfg.get("network_interface") or "")
     if not interface or "/" in interface or interface in {".", ".."} or len(interface) >= 16:
         raise ValueError("network_interface must be an explicit Linux interface name")
@@ -85,6 +166,7 @@ def _normalize_config(cfg: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("ROS_DOMAIN_ID must be in 0..232")
 
     normalized = {
+        "source_mode": source_mode,
         "network_interface": interface,
         "domain_id": domain_id,
         "lidar_input": _absolute_topic(
@@ -104,6 +186,11 @@ def _normalize_config(cfg: dict[str, Any]) -> dict[str, Any]:
             cfg.get("camera_info_topic"),
             "camera_info_topic",
             "/camera/color/camera_info",
+        ),
+        "camera_status": _absolute_topic(
+            cfg.get("camera_status_topic"),
+            "camera_status_topic",
+            "/go2/sensors/status",
         ),
         "camera_frame": str(cfg.get("camera_frame") or "front_camera"),
         "camera_fps": _positive_float(cfg.get("camera_fps"), "camera_fps", 10.0, 30.0),
@@ -162,20 +249,23 @@ def initialize(cfg: dict[str, Any]):
     if not isinstance(cfg, dict):
         return Err("sensor config must be a JSON object")
     with _lock:
-        if _children:
-            return Err("cannot reinitialize while sensor child processes are active")
+        if _active or _children:
+            return Err("cannot reinitialize while the sensor provider is active")
     try:
         normalized = _normalize_config(cfg)
     except (TypeError, ValueError, OSError) as error:
         return Err(str(error))
-    executable_artifacts = [SENSOR_RELAY, CAMERA_BRIDGE, CAMERA_DAEMON]
-    required_artifacts = [*executable_artifacts, *CAMERA_DDS_LIBRARIES, PARAMETERS]
-    missing = [str(path) for path in required_artifacts if not path.is_file()]
-    if missing:
-        return Err("missing built sensor artifact(s): " + ", ".join(missing))
-    not_executable = [str(path) for path in executable_artifacts if not os.access(path, os.X_OK)]
-    if not_executable:
-        return Err("sensor artifact(s) are not executable: " + ", ".join(not_executable))
+    if normalized["source_mode"] == "local":
+        executable_artifacts = [SENSOR_RELAY, CAMERA_BRIDGE, CAMERA_DAEMON]
+        required_artifacts = [*executable_artifacts, *CAMERA_DDS_LIBRARIES, PARAMETERS]
+        missing = [str(path) for path in required_artifacts if not path.is_file()]
+        if missing:
+            return Err("missing built sensor artifact(s): " + ", ".join(missing))
+        not_executable = [
+            str(path) for path in executable_artifacts if not os.access(path, os.X_OK)
+        ]
+        if not_executable:
+            return Err("sensor artifact(s) are not executable: " + ", ".join(not_executable))
     if _declared and _config and normalized != _config:
         return Err("sensor endpoints were already declared; restart the provider to change config")
     _config = normalized
@@ -184,11 +274,12 @@ def initialize(cfg: dict[str, Any]):
 
 @provider.on_activate
 def activate():
-    global _declared
+    global _active, _declared
     if not _config:
         return Err("sensor provider was not initialized")
-    if _children:
-        return Deferred("sensor child processes are already active")
+    with _lock:
+        if _active or _children:
+            return Deferred("sensor provider is already active")
 
     cfg = _config
     ros_common = ["--ros-args", "--params-file", str(PARAMETERS)]
@@ -229,16 +320,17 @@ def activate():
     ]
 
     try:
-        _spawn(relay_arguments, "sensor-relay.log")
-        # Override the inherited ROS LD_LIBRARY_PATH for this child only.  The
-        # installed daemon also has $ORIGIN/../lib RPATH; this explicit child
-        # environment prevents ROS's libddsc from winning loader precedence.
-        _spawn(
-            daemon_arguments,
-            "camera-daemon.log",
-            child_env={"LD_LIBRARY_PATH": str(CAMERA_LIBRARY_DIR)},
-        )
-        _spawn(camera_arguments, "camera-bridge.log")
+        if cfg["source_mode"] == "local":
+            _spawn(relay_arguments, "sensor-relay.log")
+            # Override the inherited ROS LD_LIBRARY_PATH for this child only.  The
+            # installed daemon also has $ORIGIN/../lib RPATH; this explicit child
+            # environment prevents ROS's libddsc from winning loader precedence.
+            _spawn(
+                daemon_arguments,
+                "camera-daemon.log",
+                child_env={"LD_LIBRARY_PATH": str(CAMERA_LIBRARY_DIR)},
+            )
+            _spawn(camera_arguments, "camera-bridge.log")
 
         timeout = cfg["sentinel_timeout"]
         required = [
@@ -248,6 +340,7 @@ def activate():
             # CameraInfo is intentionally still required as a truthful ROS
             # companion stream, even while K[0] == 0 means uncalibrated.
             (cfg["camera_info"], "CameraInfo"),
+            (cfg["camera_status"], "DiagnosticArray"),
         ]
         deadline = time.monotonic() + timeout
         for topic, message_type in required:
@@ -259,10 +352,24 @@ def activate():
                     f"{timeout:.1f}s activation deadline"
                 )
 
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            _stop_children()
+            return Err("camera quality gate had no time remaining in the activation deadline")
+        quality_ok, quality_detail = _camera_quality_waiter(cfg["camera_status"], remaining)
+        if not quality_ok:
+            _stop_children()
+            return Err(
+                "camera stream exists but did not pass quality_ready=true and healthy=true "
+                f"within the activation deadline: {quality_detail}"
+            )
+
         if not _declared:
             for contract, topic_key, qos in DATA_CAPABILITIES:
                 provider.declare_ros2_topic(contract, cfg[topic_key], qos=qos)
             _declared = True
+        with _lock:
+            _active = True
     except Exception as error:
         _stop_children()
         return Err(f"sensor activation failed: {type(error).__name__}: {error}")
@@ -271,13 +378,19 @@ def activate():
 
 @provider.on_deactivate
 def deactivate():
+    global _active
     _stop_children()
+    with _lock:
+        _active = False
     return Ok()
 
 
 @provider.on_shutdown
 def shutdown():
+    global _active
     _stop_children()
+    with _lock:
+        _active = False
     return Ok()
 
 

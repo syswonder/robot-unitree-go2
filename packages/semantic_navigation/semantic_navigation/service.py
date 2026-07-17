@@ -895,6 +895,10 @@ def navigate_landmark(req: NavigateLandmark_Request) -> NavigateLandmark_Respons
 def _run_detail(run: RunSnapshot) -> str:
     return json.dumps(
         {
+            # Echo the semantic id inside every navigate/status detail so a
+            # bounded Pilot history can recover the active run after its first
+            # navigate leaf has been compacted away.
+            "semantic_run_id": run.semantic_run_id,
             "state": run.state,
             "landmark": run.landmark_name,
             "map_id": run.map_id,

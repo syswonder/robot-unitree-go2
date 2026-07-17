@@ -72,16 +72,27 @@ therefore deliberate:
   credentials before reading.
 
 The protocol is fixed-width little-endian framing over `SOCK_STREAM`. Every
-frame carries magic, version, monotonically increasing sequence, realtime and
-monotonic timestamps, and a bounded payload length. The bridge rejects unknown
-versions, reserved bits, oversized data, non-increasing sequences, stale
-timestamps, malformed JPEG boundaries, decode failures, and images beyond the
-configured dimensions. It reconnects after a bounded read timeout.
+record carries magic, version, monotonically increasing sequence, realtime and
+monotonic timestamps, bounded payload length, and cumulative API acceptance,
+source rejection, API error, and IPC connection counters. Error/status records
+carry no JPEG payload. The bridge rejects unknown versions, reserved bits,
+oversized data, non-increasing sequences, stale timestamps, malformed complete
+JPEG marker streams, libjpeg warnings/failures, and images beyond the configured
+dimensions. Only a fully decoded image reaches ROS. It reconnects after a
+bounded read timeout.
+
+The first physical read-only camera probe was not stable enough for navigation:
+it observed roughly 1.88 valid frames/s, malformed or oversized JPEG samples,
+IPC reconnects, and vendor API return code `3104`. That number is retained as
+an opaque diagnostic value; this repository does not infer its meaning. The
+quality diagnostic therefore fails closed on a stale stream, a valid rate below
+1.0 Hz, or an API/rejection ratio above 20% over the bounded 10 s window. The UI
+shows the measured valid rate, rejection ratio, and gate result.
 
 ## Dependencies and build
 
 Required ROS packages are `rclcpp`, `sensor_msgs`, `std_msgs`,
-`diagnostic_msgs`, `cv_bridge`, OpenCV, `ament_cmake`, and `launch_ros`. The
+`diagnostic_msgs`, `cv_bridge`, OpenCV, libjpeg, `ament_cmake`, and `launch_ros`. The
 camera daemon additionally needs a local official `unitree_sdk2` checkout.
 Neither build helper installs packages or uses sudo.
 
@@ -153,6 +164,23 @@ activation fails closed if either camera process or its fresh outputs are
 missing. The standalone `enable_camera:=false` command above is only a local
 ROS lidar/IMU diagnostic mode; it is not a valid Robonix package activation.
 
+The provider has two exact `source_mode` values:
+
+- `local` is the default and preserves the original behavior: it owns and
+  starts `go2_sensor_relay`, `go2_camera_daemon`, and `go2_camera_bridge`.
+- `external` starts none of those three publisher processes and does not
+  require their local runtime artifacts. It waits for the standardized
+  PointCloud2, IMU, Image, and CameraInfo topics from the NX, then registers
+  those same topic contracts with Atlas. Missing samples fail activation.
+
+Do not set `source_mode` directly in normal deployment. Root
+`GO2_RUNTIME_PLACEMENT=workstation-full-nx-sensors` derives it as `external`
+and first verifies one NX publisher for both camera topics, `/scanner/cloud`
+and `/scanner/imu`, with no existing `/odom` or `/tf_static` publisher. The NX
+must have been started using `--sensors-only --camera`; its default full mode
+also owns odometry and TF and is intentionally rejected by that workstation
+placement.
+
 ## Parameters and safe defaults
 
 The checked-in defaults are in `config/go2_sensors.yaml`:
@@ -167,6 +195,9 @@ The checked-in defaults are in `config/go2_sensors.yaml`:
 - maximum decoded image: 4096 × 4096;
 - IPC read timeout: 1.5 s;
 - maximum camera frame age: 2 s;
+- quality window: 10 s after a 5 s startup grace period;
+- minimum valid camera rate: 1.0 Hz;
+- maximum source/API/strict-decode rejection ratio: 20%;
 - diagnostics publish period: 1 s.
 
 Input and output topics must be absolute and must differ, preventing accidental

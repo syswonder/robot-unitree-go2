@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "purpose": "INERT_TEMPLATE_DO_NOT_INSTALL",
+  "evidence_bundle": {
+    "pcap_file": "REPLACE_WITH_ORIGINAL_CLASSIC_PCAP_FILENAME",
+    "pcap_sha256": "REPLACE_WITH_64_HEX_DIGEST"
+  },
+  "approved_writers": [
+    {
+      "topic": "/sportmodestate",
+      "writer_gid": "REPLACE_FROM_SAME_SESSION_CORRELATION",
+      "rtps_participant_guid_prefix": "REPLACE_FROM_SAME_SESSION_CORRELATION",
+      "source_ip": "REPLACE_FROM_SAME_SESSION_CORRELATION",
+      "correlation_method": "pcap_rtps_guid_prefix_and_data_writer_entity_correlation",
+      "correlation_conclusion": "REPLACE_FROM_SAME_SESSION_CORRELATION",
+      "pcap_sha256": "REPLACE_WITH_64_HEX_DIGEST",
+      "topic_info_file": "REPLACE_WITH_ORIGINAL_TOPIC_INFO_FILENAME",
+      "topic_info_sha256": "REPLACE_WITH_64_HEX_DIGEST",
+      "correlation_file": "REPLACE_WITH_RECOMPUTABLE_CORRELATION_FILENAME",
+      "correlation_sha256": "REPLACE_WITH_64_HEX_DIGEST"
+    }
+  ]
+}

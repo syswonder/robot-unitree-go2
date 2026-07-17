@@ -568,7 +568,13 @@
       byId("globalAlert").textContent = bridgeError;
 
       const camera = data.camera;
-      byId("cameraMeta").textContent = camera ? `${camera.width}×${camera.height} · ${camera.encoding}` : "等待图像";
+      const cameraQuality = data.camera_quality;
+      const cameraQualityText = cameraQuality
+        ? `${fixed(cameraQuality.rate_hz, 2)} Hz · 错误 ${fixed((cameraQuality.quality_error_ratio || 0) * 100, 1)}% · ${cameraQuality.healthy ? "健康" : "未通过质量门"}`
+        : "等待质量诊断";
+      byId("cameraMeta").textContent = camera
+        ? `${camera.width}×${camera.height} · ${camera.encoding} · ${cameraQualityText}`
+        : `等待图像 · ${cameraQualityText}`;
       if (camera?.sequence !== undefined && camera.sequence !== cameraSequence) {
         cameraSequence = camera.sequence;
         const image = byId("cameraImage");

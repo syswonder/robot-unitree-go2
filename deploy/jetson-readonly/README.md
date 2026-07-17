@@ -5,8 +5,8 @@ module.  It is an ARM64, Ubuntu 22.04, ROS 2 Humble **CPU-only** container that
 is compatible with a JetPack 5/L4T R35 host.  It does not use the NVIDIA
 runtime or GPU.
 
-It is deliberately not the final autonomous-navigation deployment.  It only
-contains:
+It is deliberately not the final autonomous-navigation deployment. Its
+default `full` read-only placement contains:
 
 - the official `unitree_api` and `unitree_go` ROS interface packages;
 - `go2_chassis_adapter` with immutable `allow_motion: false` parameters;
@@ -18,6 +18,12 @@ speech, dashboard, semantic navigation, or Robonix control service.  The
 passive chassis process does not create an SDK IPC client, `/cmd_vel`
 subscription, arm service, or control timer when motion is disabled.  No
 component in this profile publishes velocity commands.
+
+The same image also has a `sensors-only` placement for a workstation-owned
+full Robonix stack. That placement omits both `go2_chassis_adapter` and
+`robot_state_publisher`; therefore the NX does not publish `/odom` or
+`/tf_static`. It keeps the sensor relay and optional camera bridge. These two
+placements are explicit and never selected through graph auto-discovery.
 
 ## Fail-closed host assumptions
 
@@ -138,6 +144,22 @@ After separate approval for camera reads, use:
 ./deploy/jetson-readonly/run.sh --camera
 ```
 
+When the workstation will own chassis/odom and description/TF but the NX will
+own the standardized sensor topics, start the NX first with:
+
+```bash
+./deploy/jetson-readonly/run.sh --sensors-only --camera
+```
+
+`--camera` and `--sensors-only` may be given in either order. The container
+holds an atomic kernel placement lease for its entire lifetime. Before starting
+children, both placements run the bounded read-only ownership gate and require
+zero existing publishers for camera image/info, `/scanner/cloud`,
+`/scanner/imu`, `/odom`, and `/tf_static`. After startup they require the exact
+final publisher set for the chosen profile. This prevents a second runtime or
+a preflight/start race from silently sharing ownership. The gate only queries
+`ros2 topic info -v`; it creates no application publisher or control request.
+
 Stop with:
 
 ```bash
@@ -153,8 +175,14 @@ UID/GID 10001.  The container is `--rm` and writes only ephemeral PID files,
 ROS logs, the generated robot-description parameter file, and camera IPC under
 its tmpfs.
 
-The image health check verifies process liveness, the immutable motion gate,
-and the exact interface/address.  It intentionally does not report that robot
+The image health check verifies exact child PID/start-time identity, the
+immutable motion gate, and the exact interface/address. With `--camera`, it
+also requires the live camera diagnostic to report both `quality_ready=true`
+and `healthy=true`; persistent API errors, corrupt JPEGs, low valid FPS, stale
+frames, or disconnects keep the container unhealthy. The runtime explicitly
+installs libjpeg-turbo, and image verification runs `ldd` against both the
+camera daemon and ROS camera bridge to reject missing/GPU dependencies. It
+intentionally does not report that robot
 state is semantically safe: source-clock skew, `SportModeState.error_code`, TF
 coverage, sensor extrinsics and calibration remain separate acceptance gates.
 The current read-only hardware sample reports `SportModeState.error_code=100`.
@@ -164,11 +192,21 @@ Unitree's meaning is identified and the state is measured healthy.
 
 ## Expected read-only outputs
 
+Default `full` placement:
+
 - `/odom`, `odom -> base_link`, `/imu/data`, chassis diagnostics, if a fresh
   valid `SportModeState` is received;
 - `/scanner/cloud` and `/scanner/imu`, only for fresh source stamps;
 - `/tf_static` from the pinned description;
 - with `--camera`, `/camera/color/image_raw` and uncalibrated camera info.
+
+`sensors-only` placement:
+
+- `/scanner/cloud` from the onboard lidar input;
+- `/scanner/imu` after the workstation chassis supplies fresh `/imu/data` on
+  the same DDS domain;
+- with `--camera`, `/camera/color/image_raw` and uncalibrated camera info;
+- no `/odom`, `odom -> base_link`, chassis diagnostics, or `/tf_static` owner.
 
 An earlier physical audit found a large clock offset.  After correcting the NX
 clock, remeasure source stamps through this read-only profile before accepting

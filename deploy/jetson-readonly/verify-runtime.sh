@@ -80,6 +80,26 @@ if grep -Eiq '(not found|libcuda|libnvidia)' <<< "$camera_dependencies"; then
   printf '%s\n' "$camera_dependencies" >&2
   exit 32
 fi
+# ldd does not read ament environment hooks. Load the same ROS/overlay search
+# path as entrypoint before checking the ROS bridge, otherwise normal Humble
+# libraries are incorrectly reported as missing during the image build.
+set +u
+# shellcheck disable=SC1091
+source /opt/ros/humble/setup.bash
+# shellcheck disable=SC1091
+source "${overlay}/setup.bash"
+set -u
+bridge_dependencies="$(ldd "$bridge")"
+if grep -Eiq '(not found|libcuda|libnvidia)' <<< "$bridge_dependencies"; then
+  echo "camera bridge has missing or GPU dependencies" >&2
+  printf '%s\n' "$bridge_dependencies" >&2
+  exit 32
+fi
+if ! grep -Eq 'libjpeg\.so\.[0-9]+[[:space:]]*=>' <<< "$bridge_dependencies"; then
+  echo "camera bridge does not resolve an explicit JPEG runtime" >&2
+  printf '%s\n' "$bridge_dependencies" >&2
+  exit 32
+fi
 
 for forbidden_executable in \
   "${overlay}/lib/go2_chassis_adapter/go2_sport_daemon" \
@@ -103,6 +123,8 @@ if grep -E \
   '(/api/sport/request|(^|/)lowcmd($|[^[:alnum:]_])|ros2[[:space:]]+topic[[:space:]]+pub)' \
   "${profile}/entrypoint.sh" \
   "${profile}/healthcheck.sh" \
+  "${profile}/camera-quality-healthcheck.py" \
+  "${profile}/check-runtime-ownership.sh" \
   "${profile}/validate-network.sh" \
   "${profile}/config/chassis-passive.yaml" \
   "${profile}/config/sensors-readonly.yaml"; then

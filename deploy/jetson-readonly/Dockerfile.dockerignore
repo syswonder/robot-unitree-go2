@@ -6,8 +6,13 @@
 !deploy/jetson-readonly/config/**
 !deploy/jetson-readonly/entrypoint.sh
 !deploy/jetson-readonly/healthcheck.sh
+!deploy/jetson-readonly/camera-quality-healthcheck.py
 !deploy/jetson-readonly/validate-network.sh
 !deploy/jetson-readonly/verify-runtime.sh
+
+!scripts/
+!scripts/check_runtime_ownership.sh
+!scripts/runtime_lease.sh
 
 !packages/
 !packages/go2_chassis/

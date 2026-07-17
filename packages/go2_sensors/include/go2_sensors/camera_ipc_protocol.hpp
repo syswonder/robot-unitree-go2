@@ -21,10 +21,12 @@ namespace go2_sensors::camera_ipc
 {
 
 constexpr std::uint32_t kMagic = 0x32433247U;  // "G2C2" in little-endian bytes.
-constexpr std::uint16_t kVersion = 1U;
-constexpr std::size_t kHeaderBytes = 48U;
+constexpr std::uint16_t kVersion = 2U;
+constexpr std::size_t kHeaderBytes = 104U;
 constexpr std::uint32_t kDefaultMaxJpegBytes = 4U * 1024U * 1024U;
 constexpr std::uint32_t kAbsoluteMaxJpegBytes = 16U * 1024U * 1024U;
+constexpr std::uint32_t kStatusOnly = 1U << 0U;
+constexpr std::uint32_t kKnownFlags = kStatusOnly;
 
 struct FrameHeader
 {
@@ -35,6 +37,13 @@ struct FrameHeader
   std::uint32_t flags{0U};
   std::uint16_t width_hint{0U};
   std::uint16_t height_hint{0U};
+  std::uint64_t api_request_count{0U};
+  std::uint64_t api_accepted_count{0U};
+  std::uint64_t source_rejected_count{0U};
+  std::uint64_t api_error_count{0U};
+  std::uint64_t ipc_connection_count{0U};
+  std::uint64_t ipc_disconnect_count{0U};
+  std::int32_t last_api_code{0};
 };
 
 enum class HeaderError
@@ -44,10 +53,13 @@ enum class HeaderError
   kBadVersion,
   kBadHeaderSize,
   kEmptyPayload,
+  kUnexpectedPayload,
   kPayloadTooLarge,
   kMissingRealtimeStamp,
   kMissingMonotonicStamp,
   kReservedBitsSet,
+  kInvalidStatusRecord,
+  kInconsistentCounters,
 };
 
 inline const char * header_error_string(const HeaderError error) noexcept
@@ -63,6 +75,8 @@ inline const char * header_error_string(const HeaderError error) noexcept
       return "bad header size";
     case HeaderError::kEmptyPayload:
       return "empty payload";
+    case HeaderError::kUnexpectedPayload:
+      return "status record has a payload";
     case HeaderError::kPayloadTooLarge:
       return "payload too large";
     case HeaderError::kMissingRealtimeStamp:
@@ -71,6 +85,10 @@ inline const char * header_error_string(const HeaderError error) noexcept
       return "missing monotonic stamp";
     case HeaderError::kReservedBitsSet:
       return "reserved bits are set";
+    case HeaderError::kInvalidStatusRecord:
+      return "invalid status-only record";
+    case HeaderError::kInconsistentCounters:
+      return "inconsistent daemon counters";
   }
   return "unknown";
 }
@@ -133,6 +151,14 @@ inline std::array<std::uint8_t, kHeaderBytes> encode_header(const FrameHeader & 
   put_u16(bytes.data() + 40U, header.width_hint);
   put_u16(bytes.data() + 42U, header.height_hint);
   put_u32(bytes.data() + 44U, 0U);
+  put_u64(bytes.data() + 48U, header.api_request_count);
+  put_u64(bytes.data() + 56U, header.api_accepted_count);
+  put_u64(bytes.data() + 64U, header.source_rejected_count);
+  put_u64(bytes.data() + 72U, header.api_error_count);
+  put_u64(bytes.data() + 80U, header.ipc_connection_count);
+  put_u64(bytes.data() + 88U, header.ipc_disconnect_count);
+  put_u32(bytes.data() + 96U, static_cast<std::uint32_t>(header.last_api_code));
+  put_u32(bytes.data() + 100U, 0U);
   return bytes;
 }
 
@@ -157,7 +183,23 @@ inline HeaderError decode_header(
   output.flags = get_u32(bytes.data() + 36U);
   output.width_hint = get_u16(bytes.data() + 40U);
   output.height_hint = get_u16(bytes.data() + 42U);
-  if (output.payload_bytes == 0U) {
+  output.api_request_count = get_u64(bytes.data() + 48U);
+  output.api_accepted_count = get_u64(bytes.data() + 56U);
+  output.source_rejected_count = get_u64(bytes.data() + 64U);
+  output.api_error_count = get_u64(bytes.data() + 72U);
+  output.ipc_connection_count = get_u64(bytes.data() + 80U);
+  output.ipc_disconnect_count = get_u64(bytes.data() + 88U);
+  output.last_api_code = static_cast<std::int32_t>(get_u32(bytes.data() + 96U));
+  if ((output.flags & ~kKnownFlags) != 0U || get_u32(bytes.data() + 44U) != 0U ||
+    get_u32(bytes.data() + 100U) != 0U)
+  {
+    return HeaderError::kReservedBitsSet;
+  }
+  const bool status_only = (output.flags & kStatusOnly) != 0U;
+  if (status_only && output.payload_bytes != 0U) {
+    return HeaderError::kUnexpectedPayload;
+  }
+  if (!status_only && output.payload_bytes == 0U) {
     return HeaderError::kEmptyPayload;
   }
   const auto effective_max =
@@ -171,8 +213,18 @@ inline HeaderError decode_header(
   if (output.capture_monotonic_ns == 0U) {
     return HeaderError::kMissingMonotonicStamp;
   }
-  if (output.flags != 0U || get_u32(bytes.data() + 44U) != 0U) {
-    return HeaderError::kReservedBitsSet;
+  if (status_only && (output.width_hint != 0U || output.height_hint != 0U)) {
+    return HeaderError::kInvalidStatusRecord;
+  }
+  if (output.api_accepted_count > output.api_request_count ||
+    output.source_rejected_count > output.api_request_count ||
+    output.api_error_count > output.api_request_count ||
+    output.api_accepted_count >
+    output.api_request_count - output.source_rejected_count ||
+    output.api_error_count !=
+    output.api_request_count - output.source_rejected_count - output.api_accepted_count)
+  {
+    return HeaderError::kInconsistentCounters;
   }
   return HeaderError::kOk;
 }
@@ -240,6 +292,102 @@ inline bool jpeg_dimensions(
       return width > 0U && height > 0U;
     }
     offset += static_cast<std::size_t>(segment_size);
+  }
+  return false;
+}
+
+// Validate the complete marker stream, not only SOI/EOI and the first SOF.
+// Entropy bytes are walked through byte stuffing and restart markers until a
+// real marker is found. This rejects early EOI, trailing data, malformed
+// segment lengths and marker mismatches before a decoder sees the payload.
+inline bool jpeg_structure_is_valid(
+  const std::uint8_t * const data, const std::size_t size,
+  std::uint16_t & width, std::uint16_t & height) noexcept
+{
+  width = 0U;
+  height = 0U;
+  if (!looks_like_jpeg(data, size)) {
+    return false;
+  }
+  bool saw_start_of_frame = false;
+  bool saw_start_of_scan = false;
+  std::size_t offset = 2U;
+  while (offset < size) {
+    if (data[offset] != 0xffU) {
+      return false;
+    }
+    while (offset < size && data[offset] == 0xffU) {
+      ++offset;
+    }
+    if (offset >= size) {
+      return false;
+    }
+    const std::uint8_t marker = data[offset++];
+    if (marker == 0x00U || marker == 0xd8U) {
+      return false;
+    }
+    if (marker == 0xd9U) {
+      return saw_start_of_frame && saw_start_of_scan && offset == size;
+    }
+    if (marker == 0x01U || (marker >= 0xd0U && marker <= 0xd7U)) {
+      return false;
+    }
+    if (offset + 2U > size) {
+      return false;
+    }
+    const std::uint16_t segment_size = static_cast<std::uint16_t>(
+      (static_cast<std::uint16_t>(data[offset]) << 8U) |
+      static_cast<std::uint16_t>(data[offset + 1U]));
+    if (segment_size < 2U || static_cast<std::size_t>(segment_size) > size - offset) {
+      return false;
+    }
+    if (is_start_of_frame_marker(marker)) {
+      if (saw_start_of_frame || segment_size < 8U) {
+        return false;
+      }
+      height = static_cast<std::uint16_t>(
+        (static_cast<std::uint16_t>(data[offset + 3U]) << 8U) |
+        static_cast<std::uint16_t>(data[offset + 4U]));
+      width = static_cast<std::uint16_t>(
+        (static_cast<std::uint16_t>(data[offset + 5U]) << 8U) |
+        static_cast<std::uint16_t>(data[offset + 6U]));
+      if (width == 0U || height == 0U) {
+        return false;
+      }
+      saw_start_of_frame = true;
+    }
+    offset += static_cast<std::size_t>(segment_size);
+    if (marker != 0xdaU) {
+      continue;
+    }
+    if (!saw_start_of_frame) {
+      return false;
+    }
+    saw_start_of_scan = true;
+    bool found_marker = false;
+    while (offset < size) {
+      if (data[offset] != 0xffU) {
+        ++offset;
+        continue;
+      }
+      const std::size_t marker_start = offset;
+      while (offset < size && data[offset] == 0xffU) {
+        ++offset;
+      }
+      if (offset >= size) {
+        return false;
+      }
+      const std::uint8_t scan_marker = data[offset++];
+      if (scan_marker == 0x00U || (scan_marker >= 0xd0U && scan_marker <= 0xd7U)) {
+        continue;
+      }
+      offset = marker_start;
+      found_marker = true;
+      break;
+    }
+    if (!found_marker) {
+      return false;
+    }
   }
   return false;
 }

@@ -77,6 +77,10 @@ if spec is None or spec.loader is None:
     raise SystemExit("could not load provider module")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+quality_waits: list[tuple[str, float]] = []
+module._camera_quality_waiter = lambda topic, timeout: (
+    quality_waits.append((topic, timeout)) or (True, "offline quality pass")
+)
 
 expected_ros_install = module.ROS_BUILD / "install" / "go2_sensors" / "lib" / "go2_sensors"
 if module.SENSOR_RELAY != expected_ros_install / "go2_sensor_relay":
@@ -107,6 +111,7 @@ for library in module.CAMERA_DDS_LIBRARIES:
 module.PARAMETERS.write_text("offline: true\n", encoding="utf-8")
 
 config = {
+    "source_mode": "local",
     "network_interface": "offline0",
     "lidar_input_topic": "/vendor/cloud",
     "lidar_output_topic": "/scanner/cloud",
@@ -114,6 +119,7 @@ config = {
     "imu_output_topic": "/scanner/imu",
     "camera_topic": "/camera/color/image_raw",
     "camera_info_topic": "/camera/color/camera_info",
+    "camera_status_topic": "/go2/sensors/status",
     "camera_frame": "front_camera",
     "camera_fps": 10.0,
     "camera_ipc_socket": "/tmp/offline-go2-camera.sock",
@@ -155,6 +161,7 @@ expected_streams = {
     ("/scanner/imu", "Imu"),
     ("/camera/color/image_raw", "Image"),
     ("/camera/color/camera_info", "CameraInfo"),
+    ("/go2/sensors/status", "DiagnosticArray"),
 }
 if waited_streams != expected_streams:
     raise SystemExit(f"unexpected activation sentinels: {sorted(waited_streams)}")
@@ -168,5 +175,96 @@ if set(provider.declared) != expected_declarations:
     raise SystemExit(f"unexpected runtime capability declarations: {provider.declared!r}")
 if any("intrinsics" in contract for contract, _, _ in provider.declared):
     raise SystemExit("uncalibrated CameraInfo was exposed as an intrinsics capability")
+if len(quality_waits) != 1 or quality_waits[0][0] != "/go2/sensors/status":
+    raise SystemExit(f"provider did not gate activation on camera quality: {quality_waits!r}")
+
+# Reset only the in-memory fake lifecycle. Do not call the real process-group
+# cleanup path for the deliberately synthetic FakeProcess PIDs above.
+module._config = {}
+module._children = []
+module._declared = False
+module._active = False
+provider.spawned.clear()
+provider.waited.clear()
+provider.declared.clear()
+quality_waits.clear()
+
+invalid_config = dict(config, source_mode="automatic")
+module.socket.if_nametoindex = lambda interface: 1 if interface == "offline0" else 0
+try:
+    invalid_result = module.initialize(invalid_config)
+finally:
+    module.socket.if_nametoindex = original_if_nametoindex
+if invalid_result != ("err", "source_mode must be exactly 'local' or 'external'"):
+    raise SystemExit(f"invalid source mode did not fail closed: {invalid_result!r}")
+
+# Prove that external/NX mode is only a Robonix topic registrar/sentinel. Point
+# every local runtime artifact at an absent path: initialization and activation
+# must still succeed without spawning a relay, camera daemon, or camera bridge.
+missing_root = artifact_root / "intentionally-absent-external-runtime"
+module.SENSOR_RELAY = missing_root / "go2_sensor_relay"
+module.CAMERA_BRIDGE = missing_root / "go2_camera_bridge"
+module.CAMERA_DAEMON = missing_root / "go2_camera_daemon"
+module.CAMERA_DDS_LIBRARIES = (missing_root / "libddsc.so",)
+module.PARAMETERS = missing_root / "go2_sensors.yaml"
+external_config = dict(config, source_mode="external")
+module.socket.if_nametoindex = lambda interface: 1 if interface == "offline0" else 0
+try:
+    external_init_result = module.initialize(external_config)
+finally:
+    module.socket.if_nametoindex = original_if_nametoindex
+if external_init_result != ("ok", None):
+    raise SystemExit(f"external provider initialization failed: {external_init_result!r}")
+
+external_result = module.activate()
+if external_result != ("ok", None):
+    raise SystemExit(f"external provider activation failed: {external_result!r}")
+if provider.spawned:
+    raise SystemExit(
+        "external source mode spawned a local publisher process: "
+        f"{provider.spawned!r}"
+    )
+external_waited_streams = {
+    (topic, message_type) for topic, message_type, _ in provider.waited
+}
+if external_waited_streams != expected_streams:
+    raise SystemExit(
+        "external mode did not sentinel every required standardized stream: "
+        f"{sorted(external_waited_streams)}"
+    )
+if set(provider.declared) != expected_declarations:
+    raise SystemExit(
+        "external mode did not register the Robonix data capabilities: "
+        f"{provider.declared!r}"
+    )
+if module.activate() != ("deferred", "sensor provider is already active"):
+    raise SystemExit("external mode did not reject a duplicate activation")
+if len(quality_waits) != 1:
+    raise SystemExit("external mode did not require an explicit camera quality pass")
+
+# A first Image sample is insufficient: quality failure must fail activation
+# and must not expose any Robonix data-plane capability.
+module._config = {}
+module._children = []
+module._declared = False
+module._active = False
+provider.waited.clear()
+provider.declared.clear()
+module._camera_quality_waiter = lambda topic, timeout: (
+    False,
+    "persistent API errors",
+)
+module.socket.if_nametoindex = lambda interface: 1 if interface == "offline0" else 0
+try:
+    failed_quality_init = module.initialize(external_config)
+finally:
+    module.socket.if_nametoindex = original_if_nametoindex
+if failed_quality_init != ("ok", None):
+    raise SystemExit(f"quality failure fixture did not initialize: {failed_quality_init!r}")
+failed_quality_result = module.activate()
+if failed_quality_result[0] != "err" or "persistent API errors" not in failed_quality_result[1]:
+    raise SystemExit(f"camera quality failure did not fail closed: {failed_quality_result!r}")
+if provider.declared:
+    raise SystemExit("camera capabilities were declared before the quality gate passed")
 
 print("provider manifest/runtime contract test passed")

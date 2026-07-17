@@ -36,9 +36,14 @@ not create the SportClient motion daemon.
 
 ## Gate 2 — offline and bag replay
 
-Run `scripts/validate_offline.sh`, replay only recorded state/sensor topics in
-an isolated ROS domain, and use a no-op `/cmd_vel` sink. No real dog is on that
-domain.
+Run `scripts/validate_offline.sh`, then use
+`scripts/gate2_replay_acceptance.sh` as documented in
+[GATE2_REPLAY_ACCEPTANCE.md](GATE2_REPLAY_ACCEPTANCE.md). The harness replays
+only an explicit state/sensor allowlist in a localhost-only isolated ROS
+domain and terminates `/cmd_vel` at a subscription-only evidence sink. No real
+dog or Go2 NIC is attached to that domain. `SKIP`, `READY_NOT_RUN`, and
+`FIXTURE_ONLY` are not passes; only a fingerprinted real-bag result with every
+required measured check may report `PASS`.
 
 ## Gate 3 — localization while stationary
 
@@ -62,6 +67,14 @@ GO2_OPERATOR_PRESENT=true
 GO2_SAFETY_ACK=I_UNDERSTAND_GO2_CAN_MOVE
 GO2_ALLOWED_MODES=<audited comma-separated values>
 ```
+
+An allowed mode is necessary but not sufficient: the chassis adapter also
+requires `SportModeState.error_code == 0`. The current EDU captures returned
+undocumented non-zero values (`100`/`1001`), so Gate 4 remains blocked. Do not
+weaken that check. Resolve it through Unitree/vendor confirmation or a separate
+approved, stationary, single-service `sport_mode` experiment with the remote
+operator present; topic existence and an App colour are not proof that the
+Sport API is healthy.
 
 The dedicated Go2 NIC must remain a point-to-point trusted link with exactly
 `192.168.123.99/24`, no other IPv4 address, IPv6 disabled, no gateway or DNS,

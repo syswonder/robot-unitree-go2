@@ -129,6 +129,9 @@ class JetsonReadonlyProfileTest(unittest.TestCase):
             "!rbnx-boot",
         ):
             self.assertNotIn(forbidden, ignore)
+        self.assertIn("!scripts/check_runtime_ownership.sh", ignore)
+        self.assertIn("!scripts/runtime_lease.sh", ignore)
+        self.assertIn("!deploy/jetson-readonly/camera-quality-healthcheck.py", ignore)
 
     def test_chassis_is_immutable_passive(self) -> None:
         config = yaml.safe_load(self.read("config/chassis-passive.yaml"))
@@ -253,6 +256,9 @@ class JetsonReadonlyProfileTest(unittest.TestCase):
             for path in (
                 "entrypoint.sh",
                 "healthcheck.sh",
+                "camera-quality-healthcheck.py",
+                "../../scripts/check_runtime_ownership.sh",
+                "../../scripts/runtime_lease.sh",
                 "validate-network.sh",
                 "config/chassis-passive.yaml",
                 "config/sensors-readonly.yaml",
@@ -286,6 +292,14 @@ class JetsonReadonlyProfileTest(unittest.TestCase):
             "env LD_LIBRARY_PATH=/opt/robonix/camera/lib", entrypoint
         )
         self.assertNotRegex(entrypoint, r"(?m)^export LD_LIBRARY_PATH=")
+        self.assertIn('"nx-${runtime_profile}"', entrypoint)
+        self.assertIn("go2_runtime_lease_acquire", entrypoint)
+        self.assertIn('"nx-${runtime_profile}" post', entrypoint)
+        self.assertIn('if [[ "$runtime_profile" == full ]]', entrypoint)
+        self.assertIn(
+            "sensors-only: odom and tf_static publishers are absent",
+            entrypoint,
+        )
 
         verify = self.read("verify-runtime.sh")
         for daemon in ("go2_sport_daemon", "go2_chassis_sdk_daemon"):
@@ -293,6 +307,17 @@ class JetsonReadonlyProfileTest(unittest.TestCase):
         self.assertIn("overlay package allowlist mismatch", verify)
         self.assertIn("ROS executable allowlist mismatch", verify)
         self.assertIn("libcuda|libnvidia", verify)
+        self.assertIn('bridge_dependencies="$(ldd "$bridge")"', verify)
+        self.assertIn("libjpeg\\.so", verify)
+        self.assertLess(
+            verify.index('source "${overlay}/setup.bash"'),
+            verify.index('bridge_dependencies="$(ldd "$bridge")"'),
+        )
+
+        dockerfile = self.read("Dockerfile")
+        self.assertIn("libjpeg-turbo8", dockerfile)
+        self.assertIn("ros-humble-rclpy", dockerfile)
+        self.assertIn("camera-quality-healthcheck.py", dockerfile)
 
     def test_run_contract_is_hardened_and_nonpersistent(self) -> None:
         run = self.read("run.sh")
@@ -322,6 +347,23 @@ class JetsonReadonlyProfileTest(unittest.TestCase):
         )
         for token in forbidden:
             self.assertNotIn(token, run)
+        self.assertIn("--sensors-only", run)
+        self.assertIn('GO2_NX_RUNTIME_PROFILE=${runtime_profile}', run)
+
+        health = self.read("healthcheck.sh")
+        self.assertIn("runtime-profile", health)
+        self.assertIn("required=(sensor-relay)", health)
+        self.assertIn("camera-quality-healthcheck.py", health)
+        self.assertIn("GO2_CAMERA_HEALTH_TIMEOUT_S", self.read("camera-quality-healthcheck.py"))
+        self.assertIn('values.get("quality_ready") == "true"', self.read("camera-quality-healthcheck.py"))
+        self.assertIn('values.get("healthy") == "true"', self.read("camera-quality-healthcheck.py"))
+
+        dockerfile = self.read("Dockerfile")
+        self.assertIn(
+            "COPY scripts/check_runtime_ownership.sh "
+            "/opt/robonix/profile/check-runtime-ownership.sh",
+            dockerfile,
+        )
 
     def test_no_compose_file_or_compose_invocation(self) -> None:
         self.assertFalse(any(ROOT.glob("*compose*")))

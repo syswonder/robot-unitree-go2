@@ -71,6 +71,7 @@ RUN --mount=type=cache,id=robonix-go2-jammy-apt-archives-arm64,target=/var/cache
         binutils \
         build-essential \
         cmake \
+        libjpeg-dev \
         python3-colcon-common-extensions \
         ros-humble-cv-bridge \
         ros-humble-diagnostic-msgs \
@@ -155,11 +156,13 @@ RUN --mount=type=cache,id=robonix-go2-jammy-apt-archives-arm64,target=/var/cache
         -o Acquire::https::Timeout=30 \
         install --yes --no-install-recommends \
         iproute2 \
+        libjpeg-turbo8 \
         ros-humble-cv-bridge \
         ros-humble-diagnostic-msgs \
         ros-humble-geometry-msgs \
         ros-humble-nav-msgs \
         ros-humble-rclcpp \
+        ros-humble-rclpy \
         ros-humble-rmw-cyclonedds-cpp \
         ros-humble-robot-state-publisher \
         ros-humble-rosidl-default-runtime \
@@ -195,12 +198,18 @@ COPY --from=builder /opt/robonix/camera /opt/robonix/camera
 COPY deploy/jetson-readonly/config /opt/robonix/profile/config
 COPY deploy/jetson-readonly/entrypoint.sh /opt/robonix/profile/entrypoint.sh
 COPY deploy/jetson-readonly/healthcheck.sh /opt/robonix/profile/healthcheck.sh
+COPY deploy/jetson-readonly/camera-quality-healthcheck.py /opt/robonix/profile/camera-quality-healthcheck.py
+COPY scripts/check_runtime_ownership.sh /opt/robonix/profile/check-runtime-ownership.sh
+COPY scripts/runtime_lease.sh /opt/robonix/profile/runtime-lease.sh
 COPY deploy/jetson-readonly/validate-network.sh /opt/robonix/profile/validate-network.sh
 COPY deploy/jetson-readonly/verify-runtime.sh /opt/robonix/profile/verify-runtime.sh
 
 RUN chmod 0555 \
       /opt/robonix/profile/entrypoint.sh \
       /opt/robonix/profile/healthcheck.sh \
+      /opt/robonix/profile/camera-quality-healthcheck.py \
+      /opt/robonix/profile/check-runtime-ownership.sh \
+      /opt/robonix/profile/runtime-lease.sh \
       /opt/robonix/profile/validate-network.sh \
       /opt/robonix/profile/verify-runtime.sh \
     && /opt/robonix/profile/verify-runtime.sh \
@@ -230,7 +239,7 @@ ENV HOME=/tmp/home \
 USER 10001:10001
 WORKDIR /tmp
 
-HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=8s --start-period=20s --retries=3 \
   CMD ["/opt/robonix/profile/healthcheck.sh"]
 
 ENTRYPOINT ["/opt/robonix/profile/entrypoint.sh"]

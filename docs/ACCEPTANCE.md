@@ -11,6 +11,7 @@
 | Sensors | Fresh PointCloud2, RGB Image, explicitly uncalibrated-or-measured CameraInfo, and IMU with verified frames/QoS | sensor audit/dashboard |
 | Stop | At goal tolerance, cancel, stale command and fault all result in zero motion/StopMove | supervised timestamped test log |
 | UI | Camera, lidar, map, map-frame robot pose, odom and task state visible together | dashboard screenshot/video |
+| Map operator UI | Mapping Save/Load controls are reachable only on `127.0.0.1:8091` and persist the selected map under the ignored deployment data directory | loopback listener audit + saved map lifecycle sample |
 
 ## Offline status
 
@@ -24,6 +25,15 @@ contract proof. It covers ASR final → Liaison/Pilot-equivalent tool selection 
 verified saved Pose/map generation → fake Robonix navigation RUNNING →
 SUCCEEDED → read-only dashboard status, with socket and ROS/motion-surface
 tripwires. Its fixture result must never be reported as a physical pass.
+
+Run `bash scripts/gate2_replay_acceptance.sh` for Gate 2 preflight, or add a
+reviewed local scenario and `--run` for the real isolated replay. The harness
+measures Mapping/Nav2 TF, both costmaps marking and clearing, goal cancel,
+sensor-loss stop output, and simultaneous Dashboard telemetry. Without a real
+bag/map/dependencies it returns `SKIP` (77); the checked-in
+`tests/fixtures/gate2_evidence.json` path returns `FIXTURE_ONLY` (77). Neither
+is an acceptance pass. See
+[GATE2_REPLAY_ACCEPTANCE.md](GATE2_REPLAY_ACCEPTANCE.md).
 
 ## First usable-version scope
 

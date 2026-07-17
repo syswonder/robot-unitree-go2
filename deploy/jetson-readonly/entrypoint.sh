@@ -17,6 +17,12 @@ if [[ "${GO2_ENABLE_CAMERA:-0}" != "0" && "${GO2_ENABLE_CAMERA:-0}" != "1" ]]; t
   echo "GO2_ENABLE_CAMERA must be exactly 0 or 1" >&2
   exit 2
 fi
+if [[ "${GO2_NX_RUNTIME_PROFILE:-full}" != "full" \
+  && "${GO2_NX_RUNTIME_PROFILE:-full}" != "sensors-only" ]]; then
+  echo "GO2_NX_RUNTIME_PROFILE must be exactly full or sensors-only" >&2
+  exit 2
+fi
+readonly runtime_profile="${GO2_NX_RUNTIME_PROFILE:-full}"
 if [[ ! -r /etc/os-release ]]; then
   echo "cannot validate container OS" >&2
   exit 3
@@ -51,14 +57,22 @@ source /opt/ros/humble/setup.bash
 source /opt/robonix/overlay/setup.bash
 set -u
 
-if [[ ! -r "$urdf" ]]; then
-  echo "pinned Go2 URDF is missing" >&2
-  exit 4
+# shellcheck disable=SC1091
+source "${profile_root}/runtime-lease.sh"
+go2_runtime_lease_acquire "$runtime_root" "nx-${runtime_profile}"
+
+printf '%s\n' "$runtime_profile" > "${runtime_root}/runtime-profile"
+
+if [[ "$runtime_profile" == full ]]; then
+  if [[ ! -r "$urdf" ]]; then
+    echo "pinned Go2 URDF is missing" >&2
+    exit 4
+  fi
+  {
+    printf '/**:\n  ros__parameters:\n    robot_description: |\n'
+    sed 's/^/      /' "$urdf"
+  } > "$rsp_parameters"
 fi
-{
-  printf '/**:\n  ros__parameters:\n    robot_description: |\n'
-  sed 's/^/      /' "$urdf"
-} > "$rsp_parameters"
 
 declare -a child_pids=()
 
@@ -69,7 +83,15 @@ start_child() {
   "$@" &
   local pid=$!
   child_pids+=("$pid")
-  printf '%s\n' "$pid" > "${pid_root}/${name}.pid"
+  local start_ticks temporary
+  start_ticks="$(go2_runtime_process_start_ticks "$pid")"
+  temporary="$(mktemp "${pid_root}/${name}.pid.tmp.XXXXXX")"
+  {
+    printf 'pid=%s\n' "$pid"
+    printf 'start_ticks=%s\n' "$start_ticks"
+  } > "$temporary"
+  chmod 0600 "$temporary"
+  mv -f -- "$temporary" "${pid_root}/${name}.pid"
 }
 
 terminate_children() {
@@ -86,12 +108,18 @@ terminate_children() {
 }
 trap terminate_children EXIT INT TERM
 
-start_child robot-state-publisher \
-  /opt/ros/humble/lib/robot_state_publisher/robot_state_publisher \
-  --ros-args --params-file "$rsp_parameters"
-start_child chassis-passive \
-  /opt/robonix/overlay/lib/go2_chassis_adapter/go2_chassis_adapter_node \
-  --ros-args --params-file "${profile_root}/config/chassis-passive.yaml"
+"${profile_root}/check-runtime-ownership.sh" "nx-${runtime_profile}" pre
+
+if [[ "$runtime_profile" == full ]]; then
+  start_child robot-state-publisher \
+    /opt/ros/humble/lib/robot_state_publisher/robot_state_publisher \
+    --ros-args --params-file "$rsp_parameters"
+  start_child chassis-passive \
+    /opt/robonix/overlay/lib/go2_chassis_adapter/go2_chassis_adapter_node \
+    --ros-args --params-file "${profile_root}/config/chassis-passive.yaml"
+else
+  echo "[jetson-readonly] sensors-only: odom and tf_static publishers are absent"
+fi
 start_child sensor-relay \
   /opt/robonix/overlay/lib/go2_sensors/go2_sensor_relay \
   --ros-args --params-file "${profile_root}/config/sensors-readonly.yaml"
@@ -115,7 +143,12 @@ else
   echo "[jetson-readonly] camera reader packaged but disabled"
 fi
 
-echo "[jetson-readonly] READ-ONLY runtime active; motion is structurally unavailable"
+if ! "${profile_root}/check-runtime-ownership.sh" "nx-${runtime_profile}" post; then
+  echo "[jetson-readonly] post-start publisher ownership failed" >&2
+  exit 74
+fi
+
+echo "[jetson-readonly] READ-ONLY ${runtime_profile} runtime active; motion is structurally unavailable"
 set +e
 wait -n "${child_pids[@]}"
 child_status=$?

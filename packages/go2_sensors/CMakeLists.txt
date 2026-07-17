@@ -14,7 +14,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgcodecs)
+find_package(JPEG REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -29,9 +30,12 @@ ament_target_dependencies(go2_sensor_relay
   std_msgs
 )
 
-add_executable(go2_camera_bridge src/camera_bridge_node.cpp)
+add_executable(go2_camera_bridge
+  src/camera_bridge_node.cpp
+  src/strict_jpeg_decoder.cpp
+)
 target_include_directories(go2_camera_bridge PRIVATE include ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(go2_camera_bridge ${OpenCV_LIBRARIES} Threads::Threads)
+target_link_libraries(go2_camera_bridge JPEG::JPEG ${OpenCV_LIBRARIES} Threads::Threads)
 target_compile_definitions(go2_camera_bridge PRIVATE _GNU_SOURCE)
 ament_target_dependencies(go2_camera_bridge
   cv_bridge

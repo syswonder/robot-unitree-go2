@@ -16,6 +16,9 @@ env:
   ROBONIX_ADVERTISE_HOST: 127.0.0.1
   SPEECH_BIND_ADDR: 127.0.0.1
   MAPPING_ENABLE_VIZ: "false"
+  # Mapping's operator Save/Load UI is required during supervised map capture,
+  # but must never listen on the Go2 control network.
+  MAPPING_WEBUI_HOST: 127.0.0.1
   ROBONIX_SCENE_ROS_DISTRO: humble
   SCENE_MAP_ID: "${GO2_MAP_ID}"
   # Scene's Docker launcher mounts this host directory at /data/robonix.
@@ -24,6 +27,14 @@ env:
   SCENE_DATA_DIR: ${ROBONIX_DEPLOY_DIR}/rbnx-build/data/scene
   MAPPING_MAPS_DIR: ${ROBONIX_DEPLOY_DIR}/rbnx-build/data/maps
   SPEECH_BACKEND: "${SPEECH_BACKEND}"
+  # Keep all model/runtime caches inside this ignored deployment checkout.
+  # Speech/Scene must never fall back to a global home-directory cache whose
+  # contents are absent from the deployable artifact.
+  XDG_CACHE_HOME: ${ROBONIX_DEPLOY_DIR}/.cache/xdg
+  MODELSCOPE_CACHE: ${ROBONIX_DEPLOY_DIR}/.cache/modelscope
+  MODELSCOPE_CREDENTIALS_PATH: ${ROBONIX_DEPLOY_DIR}/.cache/modelscope/credentials
+  HF_HOME: ${ROBONIX_DEPLOY_DIR}/.cache/huggingface
+  TORCH_HOME: ${ROBONIX_DEPLOY_DIR}/.cache/torch
 
 system:
   atlas: {listen: 127.0.0.1:50051, log: info}
@@ -82,6 +93,11 @@ primitive:
   - name: go2_sensors
     path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sensors
     config:
+      # local owns the relay and camera publisher processes on this host.
+      # external only waits for and registers the standardized topics
+      # published by the reviewed NX read-only profile; it spawns no sensor
+      # publisher and therefore avoids duplicate camera/lidar writers.
+      source_mode: ${GO2_SENSOR_SOURCE_MODE}
       network_interface: ${GO2_NETWORK_INTERFACE}
       lidar_input_topic: /utlidar/cloud
       lidar_output_topic: /scanner/cloud
@@ -89,6 +105,7 @@ primitive:
       imu_output_topic: /scanner/imu
       camera_topic: /camera/color/image_raw
       camera_info_topic: /camera/color/camera_info
+      camera_status_topic: /go2/sensors/status
       camera_frame: front_camera
       camera_fps: 10.0
 
@@ -104,14 +121,16 @@ primitive:
 
 service:
   - name: mapping
-    url: https://github.com/syswonder/service-map-rbnx
-    branch: main
+    # Gitlink-pinned until the upstream PR is merged. This avoids rbnx's
+    # mutable URL cache, which does not validate URL, branch, or source HEAD.
+    path: ${ROBONIX_DEPLOY_DIR}/third_party/service-map-rbnx
     config:
       algo: rtabmap
       base_frame: base_link
       odom_frame: odom
       use_sim_time: false
-      webui_port: 0
+      webui_host: 127.0.0.1
+      webui_port: 8091
       map_id: "${GO2_MAP_ID}"
       map_mode: "${GO2_MAP_MODE}"
       # Keep deskew disabled until the read-only PointCloud2 audit proves a
@@ -129,15 +148,16 @@ service:
     config:
       speech_backend: "${SPEECH_BACKEND}"
       disable_whisper: true
-      funasr_model: paraformer-zh-streaming
+      # Pin the already warmed deployment-local model directory. A symbolic
+      # hub name may silently attempt network and user-home writes at runtime.
+      funasr_model: "${GO2_FUNASR_MODEL_PATH}"
       funasr_device: auto
       tts_voice: zh-CN-XiaoxiaoNeural
       default_speaker_provider_id: audio_client_bridge
       wake_words: ["罗伯尼克斯", "罗伯特"]
 
   - name: nav2
-    url: https://github.com/syswonder/service-navigation-rbnx
-    branch: main
+    path: ${ROBONIX_DEPLOY_DIR}/third_party/service-navigation-rbnx
     config:
       params_file: config/nav2_params_go2.yaml
       bt_xml_file: config/navigate.xml

@@ -47,6 +47,22 @@ class StateTests(unittest.TestCase):
         self.assertEqual(self.state.camera_image(), (b"jpeg-data", 1))
         self.assertEqual(self.state.map_image(), (b"png-data", 1))
 
+    def test_camera_quality_is_exposed_without_binary_data(self) -> None:
+        self.state.set_camera_quality(
+            {
+                "rate_hz": 1.88,
+                "quality_error_ratio": 0.25,
+                "healthy": False,
+                "message": "x" * 500,
+                "api_code_semantics": "opaque vendor return code; not interpreted",
+            }
+        )
+        quality = self.state.snapshot()["camera_quality"]
+        self.assertEqual(quality["rate_hz"], 1.88)
+        self.assertFalse(quality["healthy"])
+        self.assertEqual(len(quality["message"]), 240)
+        self.assertIn("not interpreted", quality["api_code_semantics"])
+
     def test_semantic_status_update_is_metadata_only_and_bounded(self) -> None:
         task = self.state.update_semantic_task(
             {

@@ -5,56 +5,42 @@ set -euo pipefail
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROBONIX_ROOT="$(rbnx path root)"
-CACHE_ROOT="$DEPLOY_DIR/rbnx-boot/cache"
 EVIDENCE_DIR="$DEPLOY_DIR/rbnx-build"
 EVIDENCE_FILE="$EVIDENCE_DIR/upstream-lock.txt"
 
-manifest_repo_dir() {
+manifest_repo_path() {
   local provider_name="$1"
-  local url
-  local trimmed
+  local path
 
-  url="$(awk -v wanted="$provider_name" '
+  path="$(awk -v wanted="$provider_name" '
     /^  - name:[[:space:]]*/ {
       name = $0
       sub(/^  - name:[[:space:]]*/, "", name)
       active = (name == wanted)
       next
     }
-    active && /^    url:[[:space:]]*/ {
-      url = $0
-      sub(/^    url:[[:space:]]*/, "", url)
-      print url
+    active && /^    path:[[:space:]]*/ {
+      path = $0
+      sub(/^    path:[[:space:]]*/, "", path)
+      print path
       exit
     }
   ' "$DEPLOY_DIR/robonix_manifest.yaml")"
-  # Strip an optional matching YAML scalar quote in the shell. Keeping quote
-  # handling outside the single-quoted awk program avoids corrupting that
-  # program when a literal apostrophe is present.
-  url="${url#\"}"
-  url="${url%\"}"
-  url="${url#\'}"
-  url="${url%\'}"
-  [[ -n "$url" ]] || {
-    echo "manifest provider has no url: $provider_name" >&2
+  path="${path#\"}"
+  path="${path%\"}"
+  path="${path#\'}"
+  path="${path%\'}"
+  [[ -n "$path" ]] || {
+    echo "manifest provider has no pinned path: $provider_name" >&2
     exit 1
   }
-
-  # Match rbnx deploy_repo_dir_name(): trailing slash and optional .git are
-  # removed before the final URL/path component becomes the cache directory.
-  trimmed="${url%/}"
-  trimmed="${trimmed%.git}"
-  trimmed="${trimmed##*/}"
-  trimmed="${trimmed##*:}"
-  [[ -n "$trimmed" ]] || {
-    echo "cannot derive cache directory from manifest URL: $url" >&2
-    exit 1
-  }
-  printf '%s\n' "$trimmed"
+  path="${path//'${ROBONIX_DEPLOY_DIR}'/$DEPLOY_DIR}"
+  [[ "$path" = /* ]] || path="$DEPLOY_DIR/$path"
+  printf '%s\n' "$path"
 }
 
-MAP_ROOT="$CACHE_ROOT/$(manifest_repo_dir mapping)"
-NAV_ROOT="$CACHE_ROOT/$(manifest_repo_dir nav2)"
+MAP_ROOT="$(manifest_repo_path mapping)"
+NAV_ROOT="$(manifest_repo_path nav2)"
 
 require_file() {
   local path="$1"
@@ -136,7 +122,7 @@ require_text "$ROBONIX_ROOT/system/scene/scripts/start.sh" \
   '-v "$SCENE_HOST_DATA_DIR":/data/robonix' \
   "Scene persistent data mount"
 
-# Remote provider cache names are derived from the manifest repository URLs.
+# Mapping and Navigation are exact gitlink-pinned local paths.
 require_text "$MAP_ROOT/docker/Dockerfile" \
   "ros-humble-rmw-cyclonedds-cpp" "Mapping CycloneDDS RMW image dependency"
 require_text "$MAP_ROOT/scripts/start.sh" \
@@ -151,6 +137,9 @@ require_text "$MAP_ROOT/scripts/start.sh" \
   'MAPPING_ENABLE_VIZ="${MAPPING_ENABLE_VIZ:-false}"' \
   "Mapping visualization explicit opt-in"
 require_text "$MAP_ROOT/scripts/start.sh" \
+  'MAPPING_WEBUI_HOST="${MAPPING_WEBUI_HOST:-127.0.0.1}"' \
+  "Mapping loopback WebUI forwarding"
+require_text "$MAP_ROOT/scripts/start.sh" \
   'if [[ "$VIZ_ENABLED" == true ]]; then' \
   "Mapping X11 opt-in gate"
 require_text "$MAP_ROOT/scripts/start.sh" \
@@ -160,6 +149,9 @@ require_text "$MAP_ROOT/scripts/start.sh" \
 require_text "$MAP_ROOT/scripts/build_ros2_overlay.sh" \
   'colcon build --packages-select map' \
   "Mapping generated system-interface isolation"
+require_text "$MAP_ROOT/src/mapping_rbnx/webui.py" \
+  'os.environ.get("MAPPING_WEBUI_HOST", "127.0.0.1")' \
+  "Mapping loopback WebUI default"
 
 require_text "$NAV_ROOT/docker/Dockerfile" \
   "ros-humble-rmw-cyclonedds-cpp" "Navigation CycloneDDS RMW image dependency"

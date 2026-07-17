@@ -5,15 +5,29 @@ readonly script_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd
 readonly image="${JETSON_READONLY_IMAGE:-robonix-go2-jetson-readonly:local}"
 readonly container="robonix-go2-jetson-readonly"
 camera=0
+runtime_profile=full
 
-if [[ "$#" -gt 1 ]]; then
-  echo "usage: $0 [--camera]" >&2
+if [[ "$#" -gt 2 ]]; then
+  echo "usage: $0 [--camera] [--sensors-only]" >&2
   exit 2
 fi
-if [[ "$#" -eq 1 ]]; then
-  [[ "$1" == "--camera" ]] || { echo "unknown option: $1" >&2; exit 2; }
-  camera=1
-fi
+for option in "$@"; do
+  case "$option" in
+    --camera)
+      [[ "$camera" == 0 ]] || { echo "duplicate option: $option" >&2; exit 2; }
+      camera=1
+      ;;
+    --sensors-only)
+      [[ "$runtime_profile" == full ]] \
+        || { echo "duplicate option: $option" >&2; exit 2; }
+      runtime_profile=sensors-only
+      ;;
+    *)
+      echo "unknown option: $option" >&2
+      exit 2
+      ;;
+  esac
+done
 if [[ ! "$image" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]]; then
   echo "invalid image reference" >&2
   exit 42
@@ -29,7 +43,7 @@ if docker container inspect "$container" >/dev/null 2>&1; then
   exit 45
 fi
 
-echo "Starting READ-ONLY profile; motion, control daemons and persistence are absent."
+echo "Starting READ-ONLY ${runtime_profile} profile; motion, control daemons and persistence are absent."
 docker run \
   --detach \
   --rm \
@@ -50,4 +64,5 @@ docker run \
   --stop-timeout 10 \
   --user 10001:10001 \
   --env "GO2_ENABLE_CAMERA=${camera}" \
+  --env "GO2_NX_RUNTIME_PROFILE=${runtime_profile}" \
   "$image"

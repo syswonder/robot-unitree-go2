@@ -34,6 +34,11 @@ go2_camera_bridge:
     status:
       topic: /go2/sensors/status
       stale_timeout_seconds: 2.0
+      startup_grace_seconds: 5.0
+      quality_window_seconds: 10.0
+      min_valid_rate_hz: 1.0
+      max_error_ratio: 0.20
+      min_quality_samples: 5
       publish_period_seconds: 1.0
     calibration:
       distortion_model: plumb_bob

@@ -28,6 +28,14 @@ Motion is **off by default** and boot never arms the chassis. No posture or
 low-level motor API is implemented. Read [docs/SAFETY.md](docs/SAFETY.md)
 before connecting hardware.
 
+Publisher ownership is explicit. `GO2_RUNTIME_PLACEMENT=workstation-local`
+keeps the existing all-on-workstation behavior. The reviewed split profiles
+are `workstation-full-nx-sensors` (NX runs `--sensors-only --camera`) and
+`workstation-ui-nx-full` (NX runs its full read-only profile with `--camera`,
+while the workstation starts only the telemetry UI). Every start performs a
+bounded, read-only publisher-count preflight for camera, lidar/IMU, odometry
+and `/tf_static`; a missing or duplicate owner stops startup.
+
 ## Clone and inspect safely
 
 ```bash
@@ -53,6 +61,19 @@ This command uses fixed in-memory ASR, Pilot and navigation fixtures together
 with the real map-lifecycle guard, landmark resolver, semantic run registry and
 dashboard state. It opens no ROS graph or network socket and has no publisher
 or motion API. A pass proves interface wiring only, not physical navigation.
+
+Gate 2 has a separate localhost-only rosbag harness:
+
+```bash
+bash scripts/gate2_replay_acceptance.sh
+```
+
+With no real capture/map or ROS navigation dependencies it deliberately
+returns `SKIP` (exit 77). Its checked-in evaluator fixture deliberately returns
+`FIXTURE_ONLY` (exit 77). A real `PASS` requires all measured Mapping/Nav2,
+costmap, TF, cancel, sensor-loss stop and simultaneous UI checks described in
+[the Gate 2 runbook](docs/GATE2_REPLAY_ACCEPTANCE.md); the harness never starts
+the Unitree transport or connects to a physical Go2 interface.
 
 ## What is ready without hardware
 

@@ -29,6 +29,28 @@ names, types, QoS, rates and frame IDs. In particular verify:
 
 Do not run any Unitree example program. Do not run `ros2 topic pub`.
 
+For this EDU firmware, the measured `SportModeState.error_code` values `100`
+(standing) and `1001` (lying) are **not documented in Unitree's public message
+or SDK error tables**. They must remain unknown and fail closed; do not add
+either number to a healthy whitelist. Unitree does document `mode=0` as the
+default standing mode, `mode=3` as locomotion, `mode=5` as lie-down and
+`mode=7` as damping, but the observed dog reported `mode=0` in both standing
+and lying captures. Therefore mode alone is not a control-health proof on this
+firmware.
+
+The App's grey `sport_mode` entry has the same name as Unitree's switchable
+default motion-control service, but public source does not establish the App
+button's exact implementation, and the current dog continued publishing
+SportModeState while the App showed it grey. Keep `advanced_sport`, `ai_sport`
+and OTA off. Do not toggle `sport_mode` until the explicit single-service
+control-authority experiment after all preceding gates pass.
+
+Primary references: Unitree's pinned
+[ROS 2 state/API documentation](https://github.com/unitreerobotics/unitree_ros2/blob/668d1ec5a05d1c38d3306bdca7d59f2ba3581a88/README.md),
+[SportModeState message](https://github.com/unitreerobotics/unitree_ros2/blob/668d1ec5a05d1c38d3306bdca7d59f2ba3581a88/cyclonedds_ws/src/unitree/unitree_go/msg/SportModeState.msg),
+and mutating
+[`sport_mode` ServiceSwitch example](https://github.com/unitreerobotics/unitree_sdk2/blob/21d0a3b2c46ee48c8fdf2783becb6be3beb0a59b/example/go2/go2_robot_state_client.cpp).
+
 ## 3. Physical measurements
 
 Provide or measure, in metres/radians:

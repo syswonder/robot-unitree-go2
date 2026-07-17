@@ -38,6 +38,7 @@ def _environment_name(name: str, default: str, *, ros_topic: bool) -> str:
 @dataclass(frozen=True)
 class RosConfig:
     camera_topic: str = "/camera/color/image_raw"
+    camera_status_topic: str = "/go2/sensors/status"
     scan_topic: str = "/scanner/scan"
     cloud_topic: str = "/scanner/cloud"
     map_topic: str = "/map"
@@ -53,6 +54,11 @@ class RosConfig:
         return cls(
             camera_topic=_environment_name(
                 "GO2_DASHBOARD_CAMERA_TOPIC", cls.camera_topic, ros_topic=True
+            ),
+            camera_status_topic=_environment_name(
+                "GO2_DASHBOARD_CAMERA_STATUS_TOPIC",
+                cls.camera_status_topic,
+                ros_topic=True,
             ),
             scan_topic=_environment_name(
                 "GO2_DASHBOARD_SCAN_TOPIC", cls.scan_topic, ros_topic=True
@@ -167,6 +173,7 @@ class RosBridge:
         try:
             import rclpy
             from action_msgs.msg import GoalStatusArray
+            from diagnostic_msgs.msg import DiagnosticArray
             from nav_msgs.msg import OccupancyGrid, Odometry
             from PIL import Image
             from rclpy.context import Context
@@ -218,6 +225,12 @@ class RosBridge:
                             config.camera_topic,
                             self._on_camera,
                             qos_profile_sensor_data,
+                        ),
+                        self.create_subscription(
+                            DiagnosticArray,
+                            config.camera_status_topic,
+                            self._on_camera_status,
+                            10,
                         ),
                         self.create_subscription(
                             LaserScan,
@@ -279,6 +292,51 @@ class RosBridge:
                                 "stamp": _stamp_payload(message.header.stamp),
                             },
                             frame_id=str(message.header.frame_id),
+                        )
+                    except Exception as error:
+                        state.note_error("camera", error)
+
+                def _on_camera_status(self, message: DiagnosticArray) -> None:
+                    try:
+                        selected = next(
+                            entry
+                            for entry in message.status
+                            if str(entry.name) == "go2_sensors/camera"
+                        )
+                    except StopIteration:
+                        return
+                    try:
+                        values = {
+                            str(entry.key): str(entry.value)
+                            for entry in selected.values
+                        }
+                        numeric_keys = (
+                            "rate_hz",
+                            "quality_error_ratio",
+                            "quality_window_attempts",
+                            "quality_window_failures",
+                            "reconnect_count",
+                            "rejected_count",
+                            "daemon_source_rejected_count",
+                            "daemon_api_error_count",
+                            "daemon_last_api_code",
+                        )
+                        numeric = {
+                            key: _finite_float(values[key], key)
+                            for key in numeric_keys
+                            if key in values
+                        }
+                        state.set_camera_quality(
+                            {
+                                **numeric,
+                                "level": int(selected.level),
+                                "message": str(selected.message),
+                                "healthy": values.get("healthy") == "true",
+                                "ready": values.get("quality_ready") == "true",
+                                "api_code_semantics": (
+                                    "opaque vendor return code; not interpreted"
+                                ),
+                            }
                         )
                     except Exception as error:
                         state.note_error("camera", error)

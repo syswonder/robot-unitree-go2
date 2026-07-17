@@ -4,6 +4,8 @@ set -euo pipefail
 DEPLOY_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 echo "[validate] OFFLINE ONLY - no ROS graph, network, or motion command is used"
 
+"$DEPLOY_DIR/scripts/verify_submodule_pins.sh"
+
 find "$DEPLOY_DIR" -type f -name '*.sh' \
   -not -path '*/rbnx-build/*' \
   -not -path '*/third_party/*' -print0 \
@@ -35,6 +37,9 @@ PY
 
 python3 -m unittest discover \
   -s "$DEPLOY_DIR/packages/semantic_navigation/tests" -p 'test_*.py'
+PYTHONPATH="$DEPLOY_DIR/packages/semantic_intent_router:$DEPLOY_DIR/packages/semantic_navigation${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 -m unittest discover \
+    -s "$DEPLOY_DIR/packages/semantic_intent_router/tests" -p 'test_*.py'
 python3 -m unittest discover \
   -s "$DEPLOY_DIR/packages/go2_chassis/tests" -p 'test_*.py'
 PYTHONPATH="$DEPLOY_DIR/packages/go2_description${PYTHONPATH:+:$PYTHONPATH}" \

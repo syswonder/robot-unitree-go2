@@ -11,6 +11,15 @@
   Unitree ROS 2 message packages in addition to ROS's default generators.
 - Robonix `rbnx`, Python build dependencies, Unitree ROS 2 messages and
   Unitree SDK2.
+- Rust/Cargo for the Robonix contract generator. `build.sh` compiles
+  `robonix-codegen` incrementally from the same audited Robonix checkout and
+  passes its exact workspace-local path to `rbnx`.
+- Python `grpcio-tools` for generated gRPC stubs. The workspace-local
+  `.tools/rbnx-python` environment is preferred when present; global user-home
+  installation is not required.
+- When an operator supplies `HTTP_PROXY`/`HTTPS_PROXY`, `build.sh` explicitly
+  enables Scene's build proxy switch for that invocation. No proxy URL is
+  stored and no host network setting is changed.
 - A dedicated Go2 Ethernet NIC configured according to the approved runbook.
 
 No install command is run automatically. System package installation and
@@ -27,6 +36,9 @@ cp .env.example .env
 
 Edit `.env` locally. At minimum set the real `GO2_NETWORK_INTERFACE`, map ID
 and Pilot endpoint. Keep `GO2_ALLOW_MOTION=false` through all read-only tests.
+Keep `GO2_RUNTIME_PLACEMENT=workstation-local` unless intentionally using one
+of the two split profiles below. The value is an ownership declaration, not a
+preference: startup never auto-selects or falls back to another publisher.
 
 Inspect the PointCloud2 field table and record whether a valid per-point time
 field exists. The checked-in mapping and scan-projection profiles keep deskew
@@ -68,6 +80,19 @@ invalidates the saved pose and cancels unfinished semantic navigation.
 ./build.sh
 ```
 
+Both build and runtime force `ROBONIX_HOME` to the workspace-local
+`.tools/robonix-home`. The config must exist and its `robonix_source_path`
+must resolve to the existing audited `upstream/robonix-go2-build` checkout;
+there is no `~/.robonix` fallback. The local `.tools/rbnx/bin` is used when
+`rbnx` is absent from `PATH`.
+
+Chinese ASR is also offline and fail closed. `start.sh` pins the ModelScope
+cache and credentials path below this deployment's ignored `.cache/modelscope`
+directory and defaults `GO2_FUNASR_MODEL_PATH` to the cached online Paraformer
+model. Both `model.pt` and `config.yaml` must already exist and be non-empty.
+Startup never downloads a missing/partial model or writes ModelScope state in
+the user home directory.
+
 The validation command parses every YAML/XML file and runs only offline unit
 tests. It does not initialize ROS, DDS or Unitree SDK.
 
@@ -75,6 +100,14 @@ tests. It does not initialize ROS, DDS or Unitree SDK.
 packages from the pinned official submodule. It forces Unitree SDK example
 builds off; none of the upstream motion examples are built or run by this
 deployment.
+
+Mapping and Navigation are gitlink-pinned submodules while their required
+upstream PRs are under review. `scripts/verify_submodule_pins.sh` checks the
+exact gitlink commit, clean worktree, configured/origin URL, and every recursive
+submodule before tests or builds. This avoids Robonix's mutable URL cache,
+which reuses an existing checkout without validating its URL, branch or HEAD.
+After the upstream PRs merge, update each submodule URL to `syswonder` and pin
+the reviewed merge commit before removing the temporary fork dependency.
 
 The deployment deliberately uses each upstream service's default x86 Docker
 manifest. A future Jetson installation needs a separately reviewed deployment
@@ -90,18 +123,112 @@ not treated as evidence by themselves.
 
 ## Read-only boot
 
+### One-host default
+
+With no NX container publishing the standardized topics, keep:
+
+```dotenv
+GO2_RUNTIME_PLACEMENT=workstation-local
+GO2_ALLOW_MOTION=false
+```
+
 ```bash
 GO2_ALLOW_MOTION=false ./start.sh
 ```
 
+The publisher preflight requires zero existing writers for camera image/info,
+`/scanner/cloud`, `/scanner/imu`, `/odom`, and `/tf_static` before Robonix is
+allowed to create the local owners.
+
+### Workstation full Robonix + NX sensors only
+
+This is the split profile for full Mapping/Nav2/speech/UI on the workstation
+while the NX owns only sensor acquisition. Start the NX first:
+
+```bash
+./deploy/jetson-readonly/run.sh --sensors-only --camera
+```
+
+`--sensors-only` deliberately omits the NX passive chassis and
+`robot_state_publisher`, so it creates neither `/odom` nor `/tf_static`. It
+still starts the lidar/IMU relay and camera reader. Its `/scanner/imu` receives
+the workstation chassis `/imu/data` after the workstation comes online.
+
+On the workstation set the local `.env` entries:
+
+```dotenv
+GO2_RUNTIME_PLACEMENT=workstation-full-nx-sensors
+GO2_ALLOW_MOTION=false
+```
+
+Then start normally:
+
+```bash
+./start.sh
+```
+
+Before boot, the workstation requires exactly one NX publisher for both camera
+topics, `/scanner/cloud`, and `/scanner/imu`, and zero publishers for `/odom`
+and `/tf_static`. Its `go2_sensors` provider registers the external topics but
+spawns no local relay, VideoClient daemon, or camera bridge. The workstation
+remains the sole chassis/odom and description/TF owner.
+
+### NX full read-only + workstation UI/client only
+
+Start the default NX ownership profile with camera:
+
+```bash
+./deploy/jetson-readonly/run.sh --camera
+```
+
+On the workstation set:
+
+```dotenv
+GO2_RUNTIME_PLACEMENT=workstation-ui-nx-full
+GO2_ALLOW_MOTION=false
+GO2_DASHBOARD_BROWSER_VOICE_ENABLED=0
+```
+
+Then run:
+
+```bash
+./start.sh
+```
+
+This path requires exactly one NX publisher for camera image/info,
+`/scanner/cloud`, `/scanner/imu`, `/odom`, and `/tf_static`, then starts only
+the loopback Dashboard subscriber at `http://127.0.0.1:8092/`. It does not boot
+Robonix Atlas, chassis/sensor/description providers, Mapping, Nav2, speech, or
+semantic navigation. Consequently camera/lidar/odometry are visible, while
+map and navigation panels remain unavailable. Browser voice is forcibly off.
+
+For all placements, a duplicate publisher fails immediately. A missing
+external owner fails after the bounded discovery deadline. Startup holds an
+atomic process-lifetime placement lease and repeats the publisher check after
+all selected children are visible. The kernel lock recovers automatically
+after a crash; audit metadata is never treated as authority. Both checks only
+run `ros2 topic info -v` under `timeout`; they never publish a topic, invoke a
+service/action, change networking, or open a motion API.
+
 All non-DDS endpoints bind only to `127.0.0.1`: Atlas `50051`, Executor
 `50061`, Pilot `50071`, Liaison/client entry `50081`, Soma `50091`, reverse
-audio `60002`, capability providers on their allocated ports, and the Go2
-read-only dashboard on `8092` by default. Scene's debug UI and Mapping's
-unauthenticated administration UI are disabled. Mapping visualization is also
-disabled; the upstream compatibility gate requires its launcher to avoid X11
+audio `60002`, capability providers on their allocated ports, Mapping's
+operator Save/Load UI on `8091`, and the Go2 read-only dashboard on `8092` by
+default. Scene's debug UI remains disabled. Mapping's unauthenticated operator
+UI is intentionally loopback-only and is used for supervised map capture; use
+an authenticated SSH tunnel if it must be viewed remotely. Mapping
+visualization is disabled; the upstream compatibility gate requires its launcher to avoid X11
 probing, mounts and `xhost` entirely in that mode. `DISPLAY` is additionally
 removed as defense in depth.
+
+For the two full-Robonix workstation placements, `start.sh` launches the local
+semantic-intent endpoint before `rbnx boot`. It owns that endpoint with an
+exclusive kernel lease and requires three consecutive exact, proxy-free
+responses from `http://127.0.0.1:18080/v1/models`. A missing model contract,
+duplicate launcher, early exit, or later endpoint crash stops/fails the Robonix
+boot rather than silently sending Pilot to an unrelated endpoint. The
+UI-client-only placement does not start this endpoint because Pilot and
+semantic navigation are intentionally absent there.
 
 For access from another trusted computer, use an authenticated SSH tunnel;
 never expose these ports directly:
@@ -142,4 +269,10 @@ none of those paths is left in the disposable container filesystem.
 
 Press Ctrl-C in the foreground deployment or run `./stop.sh` from a second
 terminal. Shutdown is scoped to this Robonix deployment; scripts never use a
-broad process-name kill.
+broad process-name kill. The UI-only launcher has its own atomic lock and the
+stop path validates PID start-time plus ownership of that exact lock before
+signalling it. Stale or malformed optional UI metadata is reported and removed
+when safe, but never prevents the independent Robonix shutdown path.
+The semantic-intent endpoint has a separate atomic lease; shutdown validates
+both launcher and child PID start-time plus ownership of that exact lock before
+signalling the child. It never searches process command lines or kills by name.

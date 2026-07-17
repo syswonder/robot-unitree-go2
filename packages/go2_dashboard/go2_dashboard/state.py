@@ -91,6 +91,7 @@ class DashboardState:
         }
         self._payload: dict[str, Any] = {
             "camera": None,
+            "camera_quality": None,
             "lidar": None,
             "map": None,
             "pose_map": None,
@@ -192,6 +193,16 @@ class DashboardState:
             self._camera_jpeg = bytes(jpeg)
             self._payload["camera"]["sequence"] = sequence
             return sequence
+
+    def set_camera_quality(self, quality: Mapping[str, Any]) -> None:
+        with self._lock:
+            payload = copy.deepcopy(dict(quality))
+            payload["message"] = _bounded_text(payload.get("message"), 240)
+            payload["api_code_semantics"] = _bounded_text(
+                payload.get("api_code_semantics"), 100
+            )
+            payload["updated_at"] = float(self._wall())
+            self._payload["camera_quality"] = payload
 
     def set_map(
         self, png: bytes, metadata: Mapping[str, Any], *, frame_id: str
@@ -354,6 +365,7 @@ class DashboardState:
                 "bridge": copy.deepcopy(self._bridge),
                 "topics": topics,
                 "camera": copy.deepcopy(self._payload["camera"]),
+                "camera_quality": copy.deepcopy(self._payload["camera_quality"]),
                 "lidar": copy.deepcopy(self._payload["lidar"]),
                 "lidar_source": self._last_lidar_key,
                 "map": copy.deepcopy(self._payload["map"]),

@@ -4,3 +4,11 @@
 [submodule "third_party/unitree_ros2"]
 	path = third_party/unitree_ros2
 	url = https://github.com/unitreerobotics/unitree_ros2.git
+[submodule "third_party/service-map-rbnx"]
+	path = third_party/service-map-rbnx
+	url = https://github.com/Origamii520/service-map-rbnx.git
+	branch = agent/add-cyclonedds-runtime
+[submodule "third_party/service-navigation-rbnx"]
+	path = third_party/service-navigation-rbnx
+	url = https://github.com/Origamii520/service-navigation-rbnx.git
+	branch = agent/fix-pending-cancel

@@ -44,6 +44,17 @@ g++ \
 
 g++ \
   -std=c++17 \
+  -DGO2_SENSORS_STRICT_JPEG_TESTING \
+  -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror \
+  -I"${ROOT}/include" \
+  "${ROOT}/src/strict_jpeg_decoder.cpp" \
+  "${ROOT}/tests/test_strict_jpeg_decoder.cpp" \
+  -ljpeg \
+  -o "${TEMP_DIR}/test_strict_jpeg_decoder"
+"${TEMP_DIR}/test_strict_jpeg_decoder"
+
+g++ \
+  -std=c++17 \
   -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror \
   -I"${ROOT}/include" \
   "${ROOT}/tests/test_stamp_guard.cpp" \

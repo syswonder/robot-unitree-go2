@@ -191,11 +191,16 @@ class LandmarkStore:
                     matches.append((len(normalized), item, term))
         if not matches:
             raise LandmarkError(f"unknown semantic landmark in {utterance!r}")
-        best_length = max(length for length, _, _ in matches)
-        best = {item.id: item for length, item, _ in matches if length == best_length}
-        if len(best) != 1:
-            raise LandmarkError(f"ambiguous semantic landmark in {utterance!r}: {sorted(best)}")
-        item = next(iter(best.values()))
+        # Mentioning two different saved places is not made safe by choosing
+        # the longer spelling. A speech command such as "先去门口再去售货机"
+        # requires an explicit multi-goal policy, which this single-goal
+        # capability intentionally does not implement.
+        matched = {item.id: item for _, item, _ in matches}
+        if len(matched) != 1:
+            raise LandmarkError(
+                f"ambiguous semantic landmark in {utterance!r}: {sorted(matched)}"
+            )
+        item = next(iter(matched.values()))
         if require_verified and not item.verified:
             raise LandmarkError(
                 f"landmark {item.name!r} has no physically verified approach pose"

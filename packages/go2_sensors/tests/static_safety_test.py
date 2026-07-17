@@ -11,7 +11,11 @@ ROS_FILES = [ROOT / "src" / "sensor_relay_node.cpp", ROOT / "src" / "camera_brid
 DAEMON_FILE = ROOT / "camera_daemon" / "src" / "camera_daemon.cpp"
 PROVIDER_FILE = ROOT / "go2_sensors_provider" / "main.py"
 STAMP_GUARD_FILE = ROOT / "include" / "go2_sensors" / "stamp_guard.hpp"
-PRODUCTION_FILES = ROS_FILES + [DAEMON_FILE, PROVIDER_FILE, STAMP_GUARD_FILE]
+JPEG_DECODER_FILES = [
+    ROOT / "include" / "go2_sensors" / "strict_jpeg_decoder.hpp",
+    ROOT / "src" / "strict_jpeg_decoder.cpp",
+]
+PRODUCTION_FILES = ROS_FILES + [DAEMON_FILE, PROVIDER_FILE, STAMP_GUARD_FILE] + JPEG_DECODER_FILES
 
 
 def fail(message: str) -> None:
@@ -58,6 +62,9 @@ if unitree_headers != expected_unitree_headers:
 ros_cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
 if "unitree_sdk2" in ros_cmake:
     fail("ROS CMake target links Unitree SDK")
+for jpeg_contract in ("find_package(JPEG REQUIRED)", "JPEG::JPEG", "strict_jpeg_decoder.cpp"):
+    if jpeg_contract not in ros_cmake:
+        fail(f"strict JPEG decoder build contract is missing: {jpeg_contract}")
 daemon_cmake = (ROOT / "camera_daemon" / "CMakeLists.txt").read_text(encoding="utf-8")
 for ros_dependency in ("rclcpp", "sensor_msgs", "cv_bridge", "ament"):
     if ros_dependency in daemon_cmake:
