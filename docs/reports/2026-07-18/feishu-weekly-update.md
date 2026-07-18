@@ -24,6 +24,7 @@
 - canonical `/odom` 仍缺失，`map -> base_link` TF 尚未成立，页面尚无真实 Nav2 任务状态；因此不能进行自主导航验收。[本体 PR #1](https://github.com/syswonder/robot-unitree-go2/pull/1)：当前集成问题入口。
 - Mapping 已有 ICP 匹配和地图输出，但漂移、外参及 TF 单一权威尚未通过静止/移动对照验证。[Mapping PR #9](https://github.com/syswonder/service-map-rbnx/pull/9)：后续定位链路基线。
 - 浏览器语音入口与 FunASR 已上线，但麦克风录音到中文文本、语义 Pose、Nav2 的完整录屏尚未完成。[语音/UI commit `4aae9e7`](https://github.com/syswonder/robot-unitree-go2/commit/4aae9e758f61e5de3b70d2a4ce3ba2ed01786d08)：语音入口实现。
+- 最新素材采集完成后，固定时间偏移超出锁定范围，守卫按设计关闭全栈；截图有效，但当前实时 URL 已离线。[本体 PR #1](https://github.com/syswonder/robot-unitree-go2/pull/1)：时间证据与失败关闭实现入口。
 - 自动售货机前方安全 Pose 尚未在实地图保存；未发送真实运动命令，也未完成到达/停止验证。[Navigation PR #6](https://github.com/syswonder/service-navigation-rbnx/pull/6)：导航能力基线；[安全文档](https://github.com/syswonder/robot-unitree-go2/blob/main/docs/SAFETY.md)：运动验收规则。
 - Mapping/Navigation 的本轮补丁仍是本地提交，不能把已合并的旧 PR 写成承载这些新修复。[Mapping PR #9](https://github.com/syswonder/service-map-rbnx/pull/9)：已合并基线；[Navigation PR #6](https://github.com/syswonder/service-navigation-rbnx/pull/6)：已合并基线。
 

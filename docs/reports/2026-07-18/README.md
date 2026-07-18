@@ -19,10 +19,12 @@
 - UI 中相机、二维雷达、三维点云和 `/map` 均为实时数据；FunASR 中文流式 ASR、中文唤醒词和浏览器语音入口已就绪。
 - Mapping 已产生 ICP 匹配和 local map，但漂移与 TF 稳定性尚未验收。
 - canonical `/odom` 仍缺失，`map -> base_link` TF 尚未成立，Nav2 尚未收到真实目标。因此未进行自主运动，也未完成“自动售货机”闭环。
+- 素材采集完成后，时间守卫因 `locked_offset_deviation_exceeded` 按设计关闭全栈；当前 8092 已离线，需重新生成当次时间证据后才能再次打开实时页面。
 
 最新截图是 `assets/03-full-stack-ui-nomotion.png`，配套原始状态是
 `assets/03-full-stack-status.json`。截图采集时 UI、ROS bridge、相机、雷达、
 地图和浏览器语音入口均在线；页面上的红色缺失项必须保留，不能裁掉或写成已完成。
+截图是最新成功会话的真实快照，不代表服务此刻仍在运行。
 
 ## GitHub 状态
 
