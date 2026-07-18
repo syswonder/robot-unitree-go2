@@ -65,7 +65,8 @@ Nav2 原先有行为树动作缺失、Docker 遗留文件权限和轨迹日志�
 [Navigation PR #6](https://github.com/syswonder/service-navigation-rbnx/pull/6)：仅作为已合并基线。
 
 主集成测试目前 266/266 通过，Navigation 定向测试 34/34 通过；远端旧 head 的
-`offline-safety` CI 也已通过。[CI 记录](https://github.com/syswonder/robot-unitree-go2/actions/runs/29588111728/job/87910046603)：远端 `9bdf039` 的验证结果。
+`offline-safety` CI 也已通过。[CI 记录](https://github.com/syswonder/robot-unitree-go2/actions/runs/29588111728/job/87910046603)：`9bdf039` 的验证结果。
+最新文稿和实机截图已通过 [材料 commit `49f0aae`](https://github.com/syswonder/robot-unitree-go2/commit/49f0aae02a7ebfdbd2d11c415f81b13c58258f7c) 推送到本体 PR 分支。
 
 ## 5. 最新 UI 应该怎样解释
 

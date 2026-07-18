@@ -17,7 +17,7 @@
 - FunASR 中文流式识别和“罗伯尼克斯/罗伯特”唤醒词后端已就绪；浏览器语音仍处于预览模式。[语音/UI commit `4aae9e7`](https://github.com/syswonder/robot-unitree-go2/commit/4aae9e758f61e5de3b70d2a4ce3ba2ed01786d08)：浏览器录音统一进入 Liaison/Pilot，不直接控制机器人。
 - 文本输入“走到前面自动售货机那里”可识别语义目标，并在 Pose、定位和运动门禁不足时安全拒绝，调用数为 0。[本体 PR #1](https://github.com/syswonder/robot-unitree-go2/pull/1)：语义预览和安全门禁。
 - Nav2 lifecycle 已出现 `Managed nodes are active`；Mapping local map 已持续更新，但定位稳定性未验收。[Navigation PR #6](https://github.com/syswonder/service-navigation-rbnx/pull/6)：Nav2 基线；[Mapping PR #9](https://github.com/syswonder/service-map-rbnx/pull/9)：Mapping 基线。
-- 远端 `offline-safety` CI 已通过；本轮本地补丁与材料尚待推送后重新跑 CI。[CI 记录](https://github.com/syswonder/robot-unitree-go2/actions/runs/29588111728/job/87910046603)：远端 head `9bdf039` 的验证任务成功。
+- 远端旧 head 的 `offline-safety` CI 已通过；最新汇报材料已推送，本轮 Mapping/Navigation 本地补丁仍待分别推送和复验。[CI 记录](https://github.com/syswonder/robot-unitree-go2/actions/runs/29588111728/job/87910046603)：`9bdf039` 的验证任务成功；[材料 commit `49f0aae`](https://github.com/syswonder/robot-unitree-go2/commit/49f0aae02a7ebfdbd2d11c415f81b13c58258f7c)：最新文稿与实机截图。
 
 ## 风险 / 阻碍 / 问题
 

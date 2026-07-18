@@ -28,7 +28,7 @@
 
 | 项目 | 状态 | 链接与解释 |
 | --- | --- | --- |
-| Go2 本体适配 | Draft 开放；远端 head 仍为 `9bdf039` | [robot-unitree-go2 PR #1](https://github.com/syswonder/robot-unitree-go2/pull/1)：本体能力、部署、UI 和安全门禁总入口 |
+| Go2 本体适配 | Draft 开放；最新汇报材料已推送 | [robot-unitree-go2 PR #1](https://github.com/syswonder/robot-unitree-go2/pull/1)：本体能力、部署、UI 和安全门禁总入口；[材料 commit `49f0aae`](https://github.com/syswonder/robot-unitree-go2/commit/49f0aae02a7ebfdbd2d11c415f81b13c58258f7c)：本页、飞书稿、讲稿和真实截图 |
 | Robonix 首页列表 | 开放 | [robonix PR #152](https://github.com/syswonder/robonix/pull/152)：在 Robonix 首页本体列表增加 Unitree Go2 |
 | Catalog | 已合并 | [catalog PR #6](https://github.com/syswonder/robonix-package-catalog/pull/6)：发布 Go2 Catalog 条目 |
 | Mapping 基线 | 已合并 | [service-map-rbnx PR #9](https://github.com/syswonder/service-map-rbnx/pull/9)：CycloneDDS 与无头运行兼容；本轮 QoS/ICP 本地补丁 `ac0c136`、`55373e6` 尚未另提 PR |
