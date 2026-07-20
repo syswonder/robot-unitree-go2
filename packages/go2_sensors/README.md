@@ -81,6 +81,21 @@ JPEG marker streams, libjpeg warnings/failures, and images beyond the configured
 dimensions. Only a fully decoded image reaches ROS. It reconnects after a
 bounded read timeout.
 
+The bridge drains complete IPC records on a dedicated reader thread and hands
+them to JPEG decode/ROS publication through a one-frame latest-value mailbox.
+If decode or a downstream ROS path is slower than acquisition, a newly received
+complete frame replaces the single pending frame; an older frame is also
+dropped before processing if its connection has been invalidated. Once a valid
+in-flight frame is being decoded it is allowed to complete, avoiding permanent
+publication starvation when decode is consistently slower than acquisition;
+connection generation and the original 2 s timestamp freshness are checked
+again after decode. This prevents the Unix stream from acting as an
+unbounded-latency FIFO while preserving the original capture timestamp.
+Connection changes and shutdown invalidate pending work. The image publisher
+is best-effort/volatile with `keep_last(1)`, and diagnostics expose
+`superseded_count` and `pending_frame_depth` so overload remains visible without
+weakening the 2 s freshness gate.
+
 The first physical read-only camera probe was not stable enough for navigation:
 it observed roughly 1.88 valid frames/s, malformed or oversized JPEG samples,
 IPC reconnects, and vendor API return code `3104`. That number is retained as
@@ -218,10 +233,11 @@ verified sensor extrinsics where required) are installed and validated.
 ## Offline verification
 
 The offline suite compiles no ROS code, opens no network device, and contacts
-no robot. It validates protocol encoding/rejection/stream framing/timeouts and
-statically enforces the process boundary and absence of control surfaces. If
-`cmake` is available, it also configures (but does not build) the standalone
-camera graph and verifies that Unitree examples remain forced off:
+no robot. It validates protocol encoding/rejection/stream framing/timeouts, the
+single-slot latest-frame overload behavior, and statically enforces the process
+boundary and absence of control surfaces. If `cmake` is available, it also
+configures (but does not build) the standalone camera graph and verifies that
+Unitree examples remain forced off:
 
 ```bash
 bash tests/run_offline_tests.sh

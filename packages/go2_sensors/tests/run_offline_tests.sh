@@ -44,6 +44,23 @@ g++ \
 
 g++ \
   -std=c++17 \
+  -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror \
+  -pthread \
+  -I"${ROOT}/include" \
+  "${ROOT}/tests/test_latest_frame_mailbox.cpp" \
+  -o "${TEMP_DIR}/test_latest_frame_mailbox"
+"${TEMP_DIR}/test_latest_frame_mailbox"
+
+g++ \
+  -std=c++17 \
+  -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror \
+  -I"${ROOT}/include" \
+  "${ROOT}/tests/test_camera_error_watermark.cpp" \
+  -o "${TEMP_DIR}/test_camera_error_watermark"
+"${TEMP_DIR}/test_camera_error_watermark"
+
+g++ \
+  -std=c++17 \
   -DGO2_SENSORS_STRICT_JPEG_TESTING \
   -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror \
   -I"${ROOT}/include" \

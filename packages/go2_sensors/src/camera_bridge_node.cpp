@@ -27,7 +27,9 @@
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "diagnostic_msgs/msg/key_value.hpp"
+#include "go2_sensors/camera_error_watermark.hpp"
 #include "go2_sensors/camera_ipc_protocol.hpp"
+#include "go2_sensors/latest_frame_mailbox.hpp"
 #include "go2_sensors/strict_jpeg_decoder.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/image_encodings.hpp"
@@ -54,6 +56,7 @@ struct CameraRuntimeState
   std::uint64_t received{0U};
   std::uint64_t published{0U};
   std::uint64_t rejected{0U};
+  std::uint64_t superseded{0U};
   std::uint64_t status_records{0U};
   std::uint64_t connection_attempts{0U};
   std::uint64_t connection_failures{0U};
@@ -70,7 +73,7 @@ struct CameraRuntimeState
   std::uint64_t daemon_epoch{0U};
   std::int32_t daemon_last_api_code{0};
   double rate_hz{0.0};
-  std::string last_error{"camera daemon not connected"};
+  CameraErrorWatermark last_error{"camera daemon not connected"};
   std::chrono::steady_clock::time_point last_published{};
   std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
 };
@@ -156,7 +159,8 @@ public:
 
     load_calibration();
 
-    const auto qos = rclcpp::SensorDataQoS();
+    rclcpp::SensorDataQoS qos;
+    qos.keep_last(1);
     image_publisher_ = create_publisher<sensor_msgs::msg::Image>(image_topic_, qos);
     const auto camera_info_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
     camera_info_publisher_ =
@@ -168,7 +172,15 @@ public:
         std::chrono::duration<double>(status_period_seconds)),
       [this]() {publish_status();});
 
-    worker_ = std::thread([this]() {worker_loop();});
+    processor_ = std::thread([this]() {processor_loop();});
+    try {
+      worker_ = std::thread([this]() {worker_loop();});
+    } catch (...) {
+      running_.store(false);
+      latest_frame_.close();
+      processor_.join();
+      throw;
+    }
     RCLCPP_INFO(
       get_logger(), "READ-ONLY camera bridge waiting on local socket %s", socket_path_.c_str());
   }
@@ -176,9 +188,16 @@ public:
   ~CameraBridgeNode() override
   {
     running_.store(false);
+    active_connection_generation_.store(0U);
     reconnect_condition_.notify_all();
+    if (latest_frame_.close()) {
+      note_superseded();
+    }
     if (worker_.joinable()) {
       worker_.join();
+    }
+    if (processor_.joinable()) {
+      processor_.join();
     }
   }
 
@@ -345,17 +364,28 @@ private:
     std::lock_guard<std::mutex> lock(state_mutex_);
     state_.connected = connected;
     if (!error.empty()) {
-      state_.last_error = std::move(error);
+      state_.last_error.set_connection(std::move(error));
     } else if (connected) {
       state_.last_error.clear();
     }
   }
 
-  void reject_frame(std::string error)
+  void reject_frame(const CameraFrameRecord & frame, std::string error)
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     state_.rejected += 1U;
-    state_.last_error = std::move(error);
+    if (state_.connected &&
+      active_connection_generation_.load() == frame.connection_generation)
+    {
+      state_.last_error.record_stream_error(
+        std::move(error), frame.connection_generation, frame.header.sequence);
+    }
+  }
+
+  void note_superseded()
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    state_.superseded += 1U;
   }
 
   static bool daemon_counters_regressed(
@@ -369,7 +399,8 @@ private:
            header.ipc_disconnect_count < state.daemon_ipc_disconnects;
   }
 
-  void update_daemon_stats(const camera_ipc::FrameHeader & header)
+  void update_daemon_stats(
+    const camera_ipc::FrameHeader & header, const std::uint64_t connection_generation)
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     const bool reset = daemon_counters_regressed(state_, header);
@@ -379,12 +410,16 @@ private:
     if (reset) {
       state_.daemon_counter_resets += 1U;
       state_.daemon_epoch += 1U;
-      state_.last_error = "camera daemon counters restarted";
+      state_.last_error.record_stream_error(
+        "camera daemon counters restarted", connection_generation, header.sequence);
     } else if (new_api_error) {
-      state_.last_error = "camera API error; opaque return code " +
-        std::to_string(header.last_api_code);
+      state_.last_error.record_stream_error(
+        "camera API error; opaque return code " + std::to_string(header.last_api_code),
+        connection_generation, header.sequence);
     } else if (new_source_rejection) {
-      state_.last_error = "camera daemon rejected an invalid source JPEG";
+      state_.last_error.record_stream_error(
+        "camera daemon rejected an invalid source JPEG", connection_generation,
+        header.sequence);
     }
     state_.daemon_api_requests = header.api_request_count;
     state_.daemon_api_accepted = header.api_accepted_count;
@@ -421,12 +456,23 @@ private:
     return true;
   }
 
-  void publish_frame(
-    const camera_ipc::FrameHeader & header, const std::vector<std::uint8_t> & jpeg)
+  bool frame_is_invalidated(const CameraFrameRecord & frame) const
   {
+    return !running_.load() ||
+           active_connection_generation_.load() != frame.connection_generation;
+  }
+
+  void publish_frame(const CameraFrameRecord & frame)
+  {
+    if (frame_is_invalidated(frame)) {
+      note_superseded();
+      return;
+    }
+    const auto & header = frame.header;
+    const auto & jpeg = frame.jpeg;
     std::string error;
     if (!frame_timestamp_is_fresh(header, error)) {
-      reject_frame(std::move(error));
+      reject_frame(frame, std::move(error));
       return;
     }
     StrictJpegImage decoded;
@@ -434,13 +480,26 @@ private:
         jpeg.data(), jpeg.size(), static_cast<std::uint32_t>(max_width_),
         static_cast<std::uint32_t>(max_height_), decoded, error))
     {
-      reject_frame("strict JPEG rejection: " + error);
+      reject_frame(frame, "strict JPEG rejection: " + error);
       return;
     }
     if ((header.width_hint != 0U && header.width_hint != decoded.width) ||
       (header.height_hint != 0U && header.height_hint != decoded.height))
     {
-      reject_frame("decoded JPEG dimensions disagree with daemon hints");
+      reject_frame(frame, "decoded JPEG dimensions disagree with daemon hints");
+      return;
+    }
+    // Decoding a full-resolution JPEG is intentionally outside the socket
+    // reader.  The one-slot mailbox already bounds pending work; publishing
+    // this valid in-flight frame avoids starvation when decode is consistently
+    // slower than acquisition.  Connection changes still invalidate it, and
+    // freshness is checked again after decode.
+    if (frame_is_invalidated(frame)) {
+      note_superseded();
+      return;
+    }
+    if (!frame_timestamp_is_fresh(header, error)) {
+      reject_frame(frame, std::move(error));
       return;
     }
 
@@ -469,18 +528,35 @@ private:
       image_publisher_->publish(*image);
       camera_info_publisher_->publish(camera_info);
     } catch (const std::exception & exception) {
-      reject_frame(std::string("camera conversion/publish failed: ") + exception.what());
+      reject_frame(
+        frame, std::string("camera conversion/publish failed: ") + exception.what());
       return;
     }
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       state_.published += 1U;
       state_.last_published = std::chrono::steady_clock::now();
-      state_.last_error.clear();
+      if (state_.connected &&
+        active_connection_generation_.load() == frame.connection_generation)
+      {
+        state_.last_error.clear_if_recovered_by(
+          frame.connection_generation, header.sequence);
+      }
     }
   }
 
-  void receive_frames(const int descriptor)
+  void processor_loop()
+  {
+    while (running_.load()) {
+      auto frame = latest_frame_.wait_take();
+      if (!frame.has_value()) {
+        return;
+      }
+      publish_frame(*frame);
+    }
+  }
+
+  void receive_frames(const int descriptor, const std::uint64_t connection_generation)
   {
     std::uint64_t previous_sequence = 0U;
     bool have_sequence = false;
@@ -509,14 +585,17 @@ private:
       previous_sequence = header.sequence;
       have_sequence = true;
 
-      update_daemon_stats(header);
+      update_daemon_stats(header, connection_generation);
       if ((header.flags & camera_ipc::kStatusOnly) != 0U) {
         continue;
       }
 
-      std::vector<std::uint8_t> jpeg(header.payload_bytes);
+      CameraFrameRecord frame;
+      frame.header = header;
+      frame.connection_generation = connection_generation;
+      frame.jpeg.resize(header.payload_bytes);
       if (!camera_ipc::read_exact(
-          descriptor, jpeg.data(), jpeg.size(), read_timeout_ms_, error))
+          descriptor, frame.jpeg.data(), frame.jpeg.size(), read_timeout_ms_, error))
       {
         set_connection_state(false, std::move(error));
         return;
@@ -525,12 +604,19 @@ private:
         std::lock_guard<std::mutex> lock(state_mutex_);
         state_.received += 1U;
       }
-      publish_frame(header, jpeg);
+      const auto put_result = latest_frame_.put(std::move(frame));
+      if (!put_result.accepted) {
+        return;
+      }
+      if (put_result.replaced) {
+        note_superseded();
+      }
     }
   }
 
   void worker_loop()
   {
+    std::uint64_t next_connection_generation = 1U;
     while (running_.load()) {
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
@@ -543,13 +629,18 @@ private:
           std::lock_guard<std::mutex> lock(state_mutex_);
           state_.connection_failures += 1U;
           state_.connected = false;
-          state_.last_error = std::move(error);
+          state_.last_error.set_connection(std::move(error));
         }
         if (!wait_before_reconnect()) {
           return;
         }
         continue;
       }
+      if (next_connection_generation == std::numeric_limits<std::uint64_t>::max()) {
+        set_connection_state(false, "camera connection generation exhausted");
+        return;
+      }
+      const std::uint64_t connection_generation = next_connection_generation++;
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (state_.connections > 0U) {
@@ -559,7 +650,13 @@ private:
         state_.connected = true;
         state_.last_error.clear();
       }
-      receive_frames(descriptor);
+      active_connection_generation_.store(connection_generation);
+      receive_frames(descriptor, connection_generation);
+      std::uint64_t expected_generation = connection_generation;
+      active_connection_generation_.compare_exchange_strong(expected_generation, 0U);
+      if (latest_frame_.discard_generation(connection_generation)) {
+        note_superseded();
+      }
       ::shutdown(descriptor, SHUT_RDWR);
       ::close(descriptor);
       {
@@ -567,7 +664,7 @@ private:
         state_.connected = false;
         state_.disconnects += 1U;
         if (state_.last_error.empty()) {
-          state_.last_error = "camera IPC disconnected";
+          state_.last_error.set_connection("camera IPC disconnected");
         }
       }
       if (running_.load() && !wait_before_reconnect()) {
@@ -646,7 +743,8 @@ private:
       status.message = "camera quality gate in startup grace period";
     } else if (!snapshot.connected) {
       status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
-      status.message = snapshot.last_error.empty() ? "camera daemon disconnected" : snapshot.last_error;
+      status.message = snapshot.last_error.empty() ?
+        "camera daemon disconnected" : snapshot.last_error.message();
     } else if (snapshot.published == 0U) {
       status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
       status.message = "no valid camera frame before startup deadline";
@@ -678,12 +776,16 @@ private:
     status.values.push_back(camera_key_value("image_type", "sensor_msgs/msg/Image"));
     status.values.push_back(camera_key_value("camera_info_type", "sensor_msgs/msg/CameraInfo"));
     status.values.push_back(camera_key_value(
-      "image_qos", "sensor_data (best_effort, volatile, keep_last)"));
+      "image_qos", "sensor_data (best_effort, volatile, keep_last(1))"));
     status.values.push_back(camera_key_value(
       "camera_info_qos", "reliable, transient_local, keep_last(1)"));
     status.values.push_back(camera_key_value("received_count", std::to_string(snapshot.received)));
     status.values.push_back(camera_key_value("published_count", std::to_string(snapshot.published)));
     status.values.push_back(camera_key_value("rejected_count", std::to_string(snapshot.rejected)));
+    status.values.push_back(camera_key_value(
+      "superseded_count", std::to_string(snapshot.superseded)));
+    status.values.push_back(camera_key_value(
+      "pending_frame_depth", std::to_string(latest_frame_.depth())));
     status.values.push_back(camera_key_value(
       "status_record_count", std::to_string(snapshot.status_records)));
     status.values.push_back(camera_key_value(
@@ -731,7 +833,7 @@ private:
       "max_error_ratio", std::to_string(max_error_ratio_)));
     status.values.push_back(camera_key_value("quality_ready", quality.ready ? "true" : "false"));
     status.values.push_back(camera_key_value("healthy", healthy ? "true" : "false"));
-    status.values.push_back(camera_key_value("last_error", snapshot.last_error));
+    status.values.push_back(camera_key_value("last_error", snapshot.last_error.message()));
     status.values.push_back(camera_key_value("calibrated", calibrated_ ? "true" : "false"));
 
     diagnostic_msgs::msg::DiagnosticArray diagnostics;
@@ -765,7 +867,10 @@ private:
   bool calibrated_{false};
 
   std::atomic<bool> running_{true};
+  std::atomic<std::uint64_t> active_connection_generation_{0U};
+  LatestFrameMailbox latest_frame_;
   std::thread worker_;
+  std::thread processor_;
   std::mutex reconnect_mutex_;
   std::condition_variable reconnect_condition_;
   std::mutex state_mutex_;

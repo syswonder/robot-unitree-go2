@@ -11,11 +11,23 @@ ROS_FILES = [ROOT / "src" / "sensor_relay_node.cpp", ROOT / "src" / "camera_brid
 DAEMON_FILE = ROOT / "camera_daemon" / "src" / "camera_daemon.cpp"
 PROVIDER_FILE = ROOT / "go2_sensors_provider" / "main.py"
 STAMP_GUARD_FILE = ROOT / "include" / "go2_sensors" / "stamp_guard.hpp"
+LATEST_FRAME_FILE = ROOT / "include" / "go2_sensors" / "latest_frame_mailbox.hpp"
+ERROR_WATERMARK_FILE = ROOT / "include" / "go2_sensors" / "camera_error_watermark.hpp"
 JPEG_DECODER_FILES = [
     ROOT / "include" / "go2_sensors" / "strict_jpeg_decoder.hpp",
     ROOT / "src" / "strict_jpeg_decoder.cpp",
 ]
-PRODUCTION_FILES = ROS_FILES + [DAEMON_FILE, PROVIDER_FILE, STAMP_GUARD_FILE] + JPEG_DECODER_FILES
+PRODUCTION_FILES = (
+    ROS_FILES
+    + [
+        DAEMON_FILE,
+        PROVIDER_FILE,
+        STAMP_GUARD_FILE,
+        LATEST_FRAME_FILE,
+        ERROR_WATERMARK_FILE,
+    ]
+    + JPEG_DECODER_FILES
+)
 
 
 def fail(message: str) -> None:
@@ -155,6 +167,19 @@ for freshness_contract in (
         fail(f"sensor timestamp rejection contract is missing: {freshness_contract}")
 if relay_text.count("if (!accept_fresh_stamp(") != 2:
     fail("both PointCloud2 and Imu relays must gate publication on a fresh header stamp")
+
+camera_bridge_text = ROS_FILES[1].read_text(encoding="utf-8")
+for latest_frame_contract in (
+    "LatestFrameMailbox latest_frame_",
+    "processor_ = std::thread",
+    "latest_frame_.put(std::move(frame))",
+    "state_.last_error.clear_if_recovered_by(",
+    "qos.keep_last(1)",
+    '"superseded_count"',
+    '"pending_frame_depth"',
+):
+    if latest_frame_contract not in camera_bridge_text:
+        fail(f"camera latest-frame backpressure contract is missing: {latest_frame_contract}")
 
 sensor_config = yaml.safe_load((ROOT / "config" / "go2_sensors.yaml").read_text(encoding="utf-8"))
 relay_config = sensor_config["go2_sensor_relay"]["ros__parameters"]
