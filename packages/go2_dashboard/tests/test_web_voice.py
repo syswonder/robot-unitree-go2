@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import io
 import struct
+import tempfile
 import threading
 import unittest
 import wave
+from pathlib import Path
 
 try:
     import fastapi  # noqa: F401 - availability gate for the first build pass
@@ -65,6 +67,8 @@ class VoiceHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_disabled_post_is_hidden_and_ui_is_not_globally_read_only_when_enabled(self) -> None:
         disabled, _, _ = self._client(enabled=False)
+        page = await disabled.get("/")
+        self.assertEqual(page.headers.get("permissions-policy"), "microphone=(self)")
         self.assertEqual(
             (await disabled.post("/api/voice", content=_wav())).status_code, 404
         )
@@ -131,6 +135,132 @@ class VoiceHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 202, response.text)
         self.assertTrue(ran.wait(timeout=1.0))
         self.assertFalse(gateway.verify_nonce(nonce))
+
+    async def test_map_preview_rejects_a_status_image_sequence_race(self) -> None:
+        from go2_dashboard.state import DashboardState
+        from go2_dashboard.web import create_app
+
+        state = DashboardState()
+        state.set_map(b"first-map", {"width": 1, "height": 1}, frame_id="map")
+        app = create_app(state=state)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1:8092",
+        ) as client:
+            old_sequence = (await client.get("/api/status")).json()["topics"][
+                "map"
+            ]["sequence"]
+            state.set_map(
+                b"second-map", {"width": 2, "height": 1}, frame_id="map"
+            )
+
+            conflict = await client.get(
+                f"/api/map.png?sequence={old_sequence}"
+            )
+            self.assertEqual(conflict.status_code, 409)
+            self.assertEqual(conflict.headers["X-Telemetry-Sequence"], "2")
+
+            current = await client.get("/api/map.png?sequence=2")
+            self.assertEqual(current.status_code, 200)
+            self.assertEqual(current.headers["X-Telemetry-Sequence"], "2")
+            self.assertEqual(current.content, b"second-map")
+
+    async def test_independent_camera_endpoints_and_sequence_guard(self) -> None:
+        from go2_dashboard.state import DashboardState
+        from go2_dashboard.web import create_app
+
+        state = DashboardState()
+        state.set_camera(b"go2", {"width": 1}, frame_id="go2")
+        state.set_camera_stream(
+            "d435i_color", b"color", {"width": 1}, frame_id="color"
+        )
+        state.set_camera_stream(
+            "d435i_depth", b"depth", {"width": 1}, frame_id="depth"
+        )
+        transport = httpx.ASGITransport(app=create_app(state=state))
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1:8092",
+        ) as client:
+            for stream, content in (
+                ("go2", b"go2"),
+                ("d435i-color", b"color"),
+                ("d435i-depth", b"depth"),
+            ):
+                response = await client.get(f"/api/cameras/{stream}.jpg?sequence=1")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.content, content)
+            state.set_camera_stream(
+                "d435i_color", b"color-2", {"width": 2}, frame_id="color"
+            )
+            stale = await client.get("/api/cameras/d435i-color.jpg?sequence=1")
+            self.assertEqual(stale.status_code, 409)
+            self.assertEqual(stale.headers["X-Telemetry-Sequence"], "2")
+            self.assertEqual(
+                (await client.get("/api/cameras/unknown.jpg")).status_code,
+                422,
+            )
+
+    async def test_initial_pose_http_actions_require_exact_live_identity(self) -> None:
+        from go2_dashboard.ros_bridge import RosConfig
+        from go2_dashboard.state import DashboardState
+        from go2_dashboard.web import create_app
+
+        with tempfile.TemporaryDirectory() as temporary:
+            maps = Path(temporary)
+            map_dir = maps / "lab"
+            map_dir.mkdir()
+            (map_dir / "rtabmap.db").write_bytes(b"db")
+            (map_dir / "generation").write_text("3\n", encoding="utf-8")
+            state = DashboardState()
+            app = create_app(
+                state=state,
+                config=RosConfig(initial_pose_maps_dir=str(maps)),
+            )
+            store = app.state.ros_bridge._initial_pose_store
+            self.assertIsNotNone(store)
+            store.observe_lifecycle("lab", "localization", 3)
+            covariance = [0.0] * 36
+            covariance[0] = covariance[7] = 0.25
+            covariance[35] = 0.068
+            store.save_operator_pose(
+                {
+                    "frame_id": "map",
+                    "position": {"x": 1.0, "y": 2.0, "z": 0.0},
+                    "orientation": {
+                        "x": 0.0,
+                        "y": 0.0,
+                        "z": 0.0,
+                        "w": 1.0,
+                    },
+                    "covariance": covariance,
+                }
+            )
+            state.set_initial_pose_status(store.status())
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://127.0.0.1:8092",
+            ) as client:
+                status = (await client.get("/api/initial-pose")).json()
+                self.assertTrue(status["saved"])
+                mismatch = await client.post(
+                    "/api/initial-pose/restore",
+                    json={"map_id": "lab", "generation": 4},
+                )
+                self.assertEqual(mismatch.status_code, 409)
+                accepted = await client.post(
+                    "/api/initial-pose/restore",
+                    json={"map_id": "lab", "generation": 3},
+                )
+                self.assertEqual(accepted.status_code, 202)
+                reset = await client.post(
+                    "/api/initial-pose/reset",
+                    json={"confirm_map_id": "lab", "generation": 3},
+                )
+                self.assertEqual(reset.status_code, 200)
+                self.assertFalse(reset.json()["saved"])
 
 
 if __name__ == "__main__":

@@ -19,11 +19,11 @@ class ReadOnlySafetyTests(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             _loopback_host("0.0.0.0")
 
-    def test_python_runtime_contains_subscriptions_but_no_command_interfaces(self) -> None:
+    def test_runtime_only_adds_the_explicit_localization_seed_publisher(self) -> None:
         subscription_count = 0
+        publisher_count = 0
+        publish_count = 0
         forbidden_calls = {
-            "create_publisher",
-            "publish",
             "ActionClient",
             "send_goal",
             "send_goal_async",
@@ -43,6 +43,10 @@ class ReadOnlySafetyTests(unittest.TestCase):
                     self.assertNotIn(call_name, forbidden_calls, str(path))
                     if call_name == "create_subscription":
                         subscription_count += 1
+                    if call_name == "create_publisher":
+                        publisher_count += 1
+                    if call_name == "publish":
+                        publish_count += 1
                 if isinstance(node, ast.ImportFrom):
                     for imported in node.names:
                         self.assertNotIn(imported.name, forbidden_imports, str(path))
@@ -50,6 +54,13 @@ class ReadOnlySafetyTests(unittest.TestCase):
                     for imported in node.names:
                         self.assertNotIn(imported.name, forbidden_imports, str(path))
         self.assertGreaterEqual(subscription_count, 6)
+        self.assertEqual(publisher_count, 1)
+        self.assertEqual(publish_count, 1)
+        bridge = (RUNTIME / "ros_bridge.py").read_text(encoding="utf-8")
+        self.assertIn("config.initial_pose_topic", bridge)
+        self.assertIn("PoseWithCovarianceStamped", bridge)
+        store = (RUNTIME / "initial_pose_store.py").read_text(encoding="utf-8")
+        self.assertIn('"motion_command": False', store)
 
     def test_runtime_has_no_known_robot_command_routes(self) -> None:
         forbidden_literals = (
@@ -72,18 +83,40 @@ class ReadOnlySafetyTests(unittest.TestCase):
         for literal in forbidden_literals:
             self.assertNotIn(literal, runtime_text)
 
-    def test_web_page_has_only_the_explicit_liaison_voice_button(self) -> None:
+    def test_web_page_has_voice_and_localization_seed_buttons_only(self) -> None:
         page = (RUNTIME / "static" / "index.html").read_text(encoding="utf-8").lower()
-        self.assertEqual(page.count("<button"), 1)
+        self.assertEqual(page.count("<button"), 3)
         self.assertIn('id="voicebutton"', page)
+        self.assertIn('id="restoreposebutton"', page)
+        self.assertIn('id="resetposebutton"', page)
         self.assertIn('type="button" disabled', page)
         self.assertNotIn("<form", page)
         self.assertNotIn("<input", page)
+        self.assertIn("read-only diagnostic / not navigation ready", page)
+        self.assertIn("不得作为导航验收证据", page)
+        self.assertIn("blocked · no call", page)
+        self.assertIn('voice.execution_mode === "preview"', page)
+        self.assertIn('await context.resume()', page)
+        self.assertIn("未采集到麦克风音频", page)
+        self.assertIn("function freshmappose(data)", page)
+        self.assertIn("!data?.bridge?.connected", page)
+        self.assertIn('topic?.state !== "fresh"', page)
+        self.assertIn("freshmappose(latest)", page)
+        self.assertIn("const pose = freshmappose(data)", page)
+        self.assertIn("位姿已过期", page)
+        self.assertIn("位姿错误", page)
+        self.assertIn("function mapavailability(data)", page)
+        self.assertIn("当前地图快照 · fresh", page)
+        self.assertIn("缓存快照 · ros 已断开", page)
+        self.assertIn("缓存快照 · 地图错误", page)
+        self.assertIn("mapdegraded", page)
 
     def test_browser_voice_gateway_only_delegates_to_liaison(self) -> None:
         source = (RUNTIME / "voice_gateway.py").read_text(encoding="utf-8")
         self.assertIn("RobonixSystemLiaisonVoiceStub", source)
         self.assertIn("StartVoiceSession", source)
+        self.assertIn("capability_calls_observed", source)
+        self.assertIn("预览安全策略违规", source)
         for forbidden in (
             "robonix/service/navigation",
             "robonix/service/speech/asr",

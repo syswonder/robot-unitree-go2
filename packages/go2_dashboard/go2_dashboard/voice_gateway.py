@@ -34,6 +34,8 @@ _PROVIDER_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _ALLOWED_MIME_TYPES = frozenset({"audio/wav", "audio/x-wav"})
 _TERMINAL_VOICE_STATES = frozenset({"completed", "failed"})
+_EXECUTION_MODES = frozenset({"preview", "live"})
+_PREVIEW_GOAL_PREFIX = "语义导航预览："
 
 
 class VoiceGatewayError(RuntimeError):
@@ -85,6 +87,13 @@ def _bounded_int(
     return result
 
 
+def _execution_mode(value: Any) -> str:
+    result = str(value or "preview").strip().lower()
+    if result not in _EXECUTION_MODES:
+        raise ValueError("SEMANTIC_INTENT_EXECUTION_MODE must be preview or live")
+    return result
+
+
 def _loopback_grpc_endpoint(value: str) -> str:
     endpoint = str(value).strip()
     match = re.fullmatch(r"127\.0\.0\.1:([0-9]{1,5})", endpoint)
@@ -125,6 +134,7 @@ class VoiceConfig:
     """Validated, loopback-only settings for the optional voice handoff."""
 
     enabled: bool = False
+    execution_mode: str = "preview"
     liaison_endpoint: str = "127.0.0.1:50081"
     audio_bridge_url: str = "ws://127.0.0.1:60002/client"
     mic_provider_id: str = "audio_client_bridge"
@@ -138,6 +148,9 @@ class VoiceConfig:
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
             raise ValueError("voice enabled flag must be a boolean")
+        object.__setattr__(
+            self, "execution_mode", _execution_mode(self.execution_mode)
+        )
         _loopback_grpc_endpoint(self.liaison_endpoint)
         _loopback_bridge_url(self.audio_bridge_url)
         if _PROVIDER_ID.fullmatch(self.mic_provider_id) is None:
@@ -203,6 +216,12 @@ class VoiceConfig:
             raise ValueError("voice minimum duration must be below maximum duration")
         return cls(
             enabled=enabled,
+            execution_mode=_execution_mode(
+                env.get(
+                    "SEMANTIC_INTENT_EXECUTION_MODE",
+                    cls.execution_mode,
+                )
+            ),
             liaison_endpoint=liaison,
             audio_bridge_url=bridge,
             mic_provider_id=provider,
@@ -380,6 +399,111 @@ def _event_status(event: Mapping[str, Any]) -> tuple[str, str, str]:
     return "liaison", status_message or f"Liaison 事件 {kind}", ""
 
 
+def _pilot_payload(pilot: Any) -> dict[str, Any]:
+    """Copy bounded display-only fields from one nested Pilot event.
+
+    This intentionally does not deserialize RTDL arguments or connect to any
+    capability.  Counting call-bearing plan leaves gives the preview UI a
+    fail-closed tripwire if Pilot ever returns an executable plan.
+    """
+
+    kind = int(getattr(pilot, "event_kind", -1))
+    result: dict[str, Any] = {
+        "event_kind": kind,
+        "text": "",
+        "task_goal": "",
+        "success_criterion": "",
+        "task_status": "",
+        "intent_target": "",
+        "capability_calls": 0,
+    }
+    if kind == 0:
+        result["text"] = str(getattr(pilot, "text_chunk", "") or "").strip()[:300]
+    elif kind == 1:
+        plan = getattr(pilot, "plan", None)
+        nodes = list(getattr(plan, "nodes", ()) or ())
+        result["capability_calls"] = sum(
+            1
+            for node in nodes
+            if any(
+                str(getattr(getattr(node, "call", None), field, "") or "").strip()
+                for field in ("call_id", "provider_id", "contract_id", "args_json")
+            )
+        )
+    elif kind == 3:
+        status = getattr(pilot, "status", None)
+        result["text"] = str(getattr(status, "message", "") or "").strip()[:300]
+    elif kind == 4:
+        result["text"] = str(getattr(pilot, "final_text", "") or "").strip()[:300]
+    elif kind == 6:
+        task = getattr(pilot, "task_state", None)
+        goal = str(getattr(task, "goal", "") or "").strip()[:300]
+        criterion = str(
+            getattr(task, "success_criterion", "") or ""
+        ).strip()[:500]
+        task_status = str(getattr(task, "status", "") or "").strip()[:64]
+        result.update(
+            {
+                "task_goal": goal,
+                "success_criterion": criterion,
+                "task_status": task_status,
+            }
+        )
+        if goal.startswith(_PREVIEW_GOAL_PREFIX):
+            result["intent_target"] = goal[len(_PREVIEW_GOAL_PREFIX) :].strip()[:128]
+    return result
+
+
+def _voice_event_payload(event: Any) -> dict[str, Any]:
+    """Return the bounded in-memory representation consumed by the UI worker."""
+
+    result = {
+        "kind": int(getattr(event, "event_kind", -1)),
+        "text": str(getattr(event, "text", "") or "").strip()[:300],
+        "status_message": str(
+            getattr(event, "status_message", "") or ""
+        ).strip()[:400],
+        "error": str(getattr(event, "error", "") or "").strip()[:400],
+    }
+    if result["kind"] == 6:
+        result["pilot"] = _pilot_payload(getattr(event, "pilot", None))
+    return result
+
+
+def _event_update(event: Mapping[str, Any], execution_mode: str) -> dict[str, Any]:
+    """Translate one Liaison event into display-only state fields."""
+
+    status, message, transcript = _event_status(event)
+    result: dict[str, Any] = {"status": status, "message": message}
+    if transcript:
+        result["transcript"] = transcript
+    pilot = event.get("pilot")
+    if not isinstance(pilot, Mapping):
+        return result
+
+    pilot_kind = int(pilot.get("event_kind", -1))
+    pilot_text = str(pilot.get("text") or "").strip()[:300]
+    if pilot_text:
+        result["message"] = pilot_text
+    calls = int(pilot.get("capability_calls", 0) or 0)
+    result["capability_calls_observed"] = calls
+    if pilot_kind == 6:
+        target = str(pilot.get("intent_target") or "").strip()[:128]
+        goal = str(pilot.get("task_goal") or "").strip()[:300]
+        task_status = str(pilot.get("task_status") or "").strip()[:64]
+        criterion = str(pilot.get("success_criterion") or "").strip()[:500]
+        if goal:
+            result["intent_summary"] = goal
+        if target:
+            result["intent_target"] = target
+            result["message"] = f"Pilot 已解析语义目标：{target}（未执行）"
+        if task_status:
+            result["pilot_task_status"] = task_status
+        if _execution_mode(execution_mode) == "preview" and criterion:
+            result["blocked_reason"] = criterion
+    return result
+
+
 def _grpc_voice_worker(
     config: VoiceConfig,
     session_id: str,
@@ -416,6 +540,7 @@ def _grpc_voice_worker(
                     "source": "go2_dashboard_browser",
                     "transport": "loopback",
                     "audio_persisted": False,
+                    "semantic_intent_execution_mode": config.execution_mode,
                 },
                 separators=(",", ":"),
             ),
@@ -426,14 +551,7 @@ def _grpc_voice_worker(
                 call.cancel()
                 raise VoiceGatewayError("voice session canceled during shutdown")
             event = response.event
-            emit_event(
-                {
-                    "kind": int(event.event_kind),
-                    "text": str(event.text),
-                    "status_message": str(event.status_message),
-                    "error": str(event.error),
-                }
-            )
+            emit_event(_voice_event_payload(event))
     finally:
         if cancel.is_set() and call is not None:
             call.cancel()
@@ -584,11 +702,19 @@ async def _run_network_session(
 
                 if event_task in done:
                     event = event_task.result()
-                    status, message, transcript = _event_status(event)
-                    update(status=status, message=message, transcript=transcript)
-                    if status == "failed":
-                        raise VoiceGatewayError(message)
-                    terminal = status == "completed"
+                    event_update = _event_update(event, config.execution_mode)
+                    update(**event_update)
+                    if (
+                        config.execution_mode == "preview"
+                        and int(event_update.get("capability_calls_observed", 0)) > 0
+                    ):
+                        raise VoiceGatewayError(
+                            "预览安全策略违规：Pilot 返回了可执行 capability 计划，"
+                            "会话已阻断"
+                        )
+                    if event_update["status"] == "failed":
+                        raise VoiceGatewayError(str(event_update["message"]))
+                    terminal = event_update["status"] == "completed"
                     event_task = asyncio.create_task(events.get())
 
                 if sender is not None and sender in done:
@@ -648,7 +774,11 @@ class BrowserVoiceGateway:
         self._thread: threading.Thread | None = None
         self._cancel = threading.Event()
         self._nonce = secrets.token_urlsafe(32)
-        self._state.configure_voice(config.enabled, config.public_limits())
+        self._state.configure_voice(
+            config.enabled,
+            config.public_limits(),
+            config.execution_mode,
+        )
 
     def browser_status(self) -> dict[str, Any]:
         result = self._state.voice_status()
@@ -673,6 +803,11 @@ class BrowserVoiceGateway:
                 message="音频已通过严格校验，等待转交 Liaison",
                 transcript="",
                 active=True,
+                intent_target="",
+                intent_summary="",
+                blocked_reason="",
+                pilot_task_status="",
+                capability_calls_observed=0,
             )
             # One successful handoff consumes the browser nonce. The page
             # fetches a fresh value before the next capture, so replaying the
@@ -694,13 +829,28 @@ class BrowserVoiceGateway:
         duration_s: float,
         cancel: threading.Event,
     ) -> None:
-        def update(*, status: str, message: str, transcript: str = "") -> None:
+        def update(
+            *,
+            status: str,
+            message: str,
+            transcript: str | None = None,
+            intent_target: str | None = None,
+            intent_summary: str | None = None,
+            blocked_reason: str | None = None,
+            pilot_task_status: str | None = None,
+            capability_calls_observed: int | None = None,
+        ) -> None:
             self._state.update_voice(
                 session_id=session_id,
                 status=status,
                 message=message,
                 transcript=transcript,
                 active=status not in _TERMINAL_VOICE_STATES,
+                intent_target=intent_target,
+                intent_summary=intent_summary,
+                blocked_reason=blocked_reason,
+                pilot_task_status=pilot_task_status,
+                capability_calls_observed=capability_calls_observed,
             )
 
         try:

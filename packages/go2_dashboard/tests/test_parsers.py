@@ -108,6 +108,33 @@ class ParserTests(unittest.TestCase):
             bytes([17, 17, 17]),
         )
 
+    def test_four_channel_images_drop_alpha_and_honor_row_padding(self) -> None:
+        rgba = bytes(
+            [1, 2, 3, 4, 5, 6, 7, 8, 99, 99, 9, 10, 11, 12, 13, 14, 15, 16, 88, 88]
+        )
+        self.assertEqual(
+            image_to_rgb_bytes(rgba, 2, 2, 10, "rgba8"),
+            bytes([1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15]),
+        )
+
+        bgra = bytes([3, 2, 1, 4, 7, 6, 5, 8])
+        self.assertEqual(
+            image_to_rgb_bytes(bgra, 2, 1, 8, "bgra8"),
+            bytes([1, 2, 3, 5, 6, 7]),
+        )
+
+    def test_bgr_and_mono_multi_pixel_rows_are_vectorized_equivalently(self) -> None:
+        bgr = bytes([3, 2, 1, 6, 5, 4, 99, 9, 8, 7, 12, 11, 10, 88])
+        self.assertEqual(
+            image_to_rgb_bytes(bgr, 2, 2, 7, "bgr8"),
+            bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+        )
+        mono = bytes([1, 2, 99, 3, 4, 88])
+        self.assertEqual(
+            image_to_rgb_bytes(mono, 2, 2, 3, "mono8"),
+            bytes([1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4]),
+        )
+
     def test_quaternion_to_yaw_normalizes_input(self) -> None:
         yaw = quaternion_to_yaw(0.0, 0.0, math.sqrt(2), math.sqrt(2))
         self.assertAlmostEqual(yaw, math.pi / 2)

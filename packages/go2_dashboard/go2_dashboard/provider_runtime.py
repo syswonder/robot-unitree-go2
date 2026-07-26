@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -99,17 +100,39 @@ def _public_url(value: Any) -> str:
     return result
 
 
+def _absolute_path(value: Any, key: str, *, allow_empty: bool = False) -> str:
+    result = str(value or "").strip()
+    if not result and allow_empty:
+        return ""
+    if (
+        not result
+        or len(result) > 4096
+        or "\x00" in result
+        or not Path(result).is_absolute()
+    ):
+        raise ValueError(f"{key} must be an absolute path")
+    return result
+
+
 @dataclass(frozen=True)
 class DashboardConfig:
     host: str = "127.0.0.1"
     port: int = 8092
     public_url: str = ""
     camera_topic: str = "/camera/color/image_raw"
+    d435i_color_topic: str = "/go2/d435i/color/image_raw"
+    d435i_depth_topic: str = "/go2/d435i/aligned_depth_to_color/image_raw"
+    d435i_camera_info_topic: str = "/go2/d435i/color/camera_info"
     scan_topic: str = "/scanner/scan"
     cloud_topic: str = "/scanner/cloud"
     map_topic: str = "/map"
+    pose_topic: str = "/robonix/map/pose"
     odom_topic: str = "/odom"
     nav_status_topic: str = "/navigate_to_pose/_action/status"
+    initial_pose_topic: str = "/initialpose"
+    map_lifecycle_topic: str = "/robonix/map/lifecycle"
+    initial_pose_maps_dir: str = ""
+    initial_pose_auto_restore: bool = False
     map_frame: str = "map"
     base_frame: str = "base_link"
     log_level: str = "info"
@@ -169,6 +192,20 @@ class DashboardConfig:
             camera_topic=_topic(
                 values.get("camera_topic", defaults.camera_topic), "camera_topic"
             ),
+            d435i_color_topic=_topic(
+                values.get("d435i_color_topic", defaults.d435i_color_topic),
+                "d435i_color_topic",
+            ),
+            d435i_depth_topic=_topic(
+                values.get("d435i_depth_topic", defaults.d435i_depth_topic),
+                "d435i_depth_topic",
+            ),
+            d435i_camera_info_topic=_topic(
+                values.get(
+                    "d435i_camera_info_topic", defaults.d435i_camera_info_topic
+                ),
+                "d435i_camera_info_topic",
+            ),
             scan_topic=_topic(
                 values.get("scan_topic", defaults.scan_topic), "scan_topic"
             ),
@@ -176,12 +213,39 @@ class DashboardConfig:
                 values.get("cloud_topic", defaults.cloud_topic), "cloud_topic"
             ),
             map_topic=_topic(values.get("map_topic", defaults.map_topic), "map_topic"),
+            pose_topic=_topic(
+                values.get("pose_topic", defaults.pose_topic), "pose_topic"
+            ),
             odom_topic=_topic(
                 values.get("odom_topic", defaults.odom_topic), "odom_topic"
             ),
             nav_status_topic=_topic(
                 values.get("nav_status_topic", defaults.nav_status_topic),
                 "nav_status_topic",
+            ),
+            initial_pose_topic=_topic(
+                values.get("initial_pose_topic", defaults.initial_pose_topic),
+                "initial_pose_topic",
+            ),
+            map_lifecycle_topic=_topic(
+                values.get(
+                    "map_lifecycle_topic", defaults.map_lifecycle_topic
+                ),
+                "map_lifecycle_topic",
+            ),
+            initial_pose_maps_dir=_absolute_path(
+                values.get(
+                    "initial_pose_maps_dir", defaults.initial_pose_maps_dir
+                ),
+                "initial_pose_maps_dir",
+                allow_empty=True,
+            ),
+            initial_pose_auto_restore=_explicit_switch(
+                values.get(
+                    "initial_pose_auto_restore",
+                    defaults.initial_pose_auto_restore,
+                ),
+                "initial_pose_auto_restore",
             ),
             map_frame=_frame(
                 values.get("map_frame", defaults.map_frame), "map_frame"
@@ -239,11 +303,25 @@ class DashboardConfig:
                 "GO2_DASHBOARD_PORT": str(self.port),
                 "GO2_DASHBOARD_LOG_LEVEL": self.log_level,
                 "GO2_DASHBOARD_CAMERA_TOPIC": self.camera_topic,
+                "GO2_DASHBOARD_D435I_COLOR_TOPIC": self.d435i_color_topic,
+                "GO2_DASHBOARD_D435I_DEPTH_TOPIC": self.d435i_depth_topic,
+                "GO2_DASHBOARD_D435I_CAMERA_INFO_TOPIC": (
+                    self.d435i_camera_info_topic
+                ),
                 "GO2_DASHBOARD_SCAN_TOPIC": self.scan_topic,
                 "GO2_DASHBOARD_CLOUD_TOPIC": self.cloud_topic,
                 "GO2_DASHBOARD_MAP_TOPIC": self.map_topic,
+                "GO2_DASHBOARD_POSE_TOPIC": self.pose_topic,
                 "GO2_DASHBOARD_ODOM_TOPIC": self.odom_topic,
                 "GO2_DASHBOARD_NAV_STATUS_TOPIC": self.nav_status_topic,
+                "GO2_DASHBOARD_INITIAL_POSE_TOPIC": self.initial_pose_topic,
+                "GO2_DASHBOARD_MAP_LIFECYCLE_TOPIC": self.map_lifecycle_topic,
+                "GO2_DASHBOARD_INITIAL_POSE_MAPS_DIR": (
+                    self.initial_pose_maps_dir
+                ),
+                "GO2_DASHBOARD_INITIAL_POSE_AUTO_RESTORE": (
+                    "1" if self.initial_pose_auto_restore else "0"
+                ),
                 "GO2_DASHBOARD_MAP_FRAME": self.map_frame,
                 "GO2_DASHBOARD_BASE_FRAME": self.base_frame,
                 "GO2_DASHBOARD_BROWSER_VOICE_ENABLED": (

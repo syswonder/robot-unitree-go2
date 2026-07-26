@@ -53,11 +53,19 @@ class ProviderRuntimeTests(unittest.TestCase):
                 "port": "9102",
                 "public_url": "https://go2.example.test/telemetry",
                 "image_topic": "/front/image",
+                "d435i_color_topic": "/d435/color",
+                "d435i_depth_topic": "/d435/depth",
+                "d435i_camera_info_topic": "/d435/info",
                 "scan_topic": "/lidar/scan",
                 "cloud_topic": "/lidar/cloud",
                 "map_topic": "/lab/map",
+                "pose_topic": "/lab/map_pose",
                 "odom_topic": "/go2/odom",
                 "nav_status_topic": "/nav/status",
+                "initial_pose_topic": "/lab/initialpose",
+                "map_lifecycle_topic": "/lab/map/lifecycle",
+                "initial_pose_maps_dir": "/tmp/robonix-maps",
+                "initial_pose_auto_restore": "1",
                 "map_frame": "lab_map",
                 "base_frame": "go2_base",
                 "log_level": "warning",
@@ -80,11 +88,21 @@ class ProviderRuntimeTests(unittest.TestCase):
         self.assertEqual(environment["GO2_DASHBOARD_HOST"], "127.0.0.1")
         self.assertEqual(environment["GO2_DASHBOARD_PORT"], "9102")
         self.assertEqual(environment["GO2_DASHBOARD_CAMERA_TOPIC"], "/front/image")
+        self.assertEqual(environment["GO2_DASHBOARD_D435I_COLOR_TOPIC"], "/d435/color")
+        self.assertEqual(environment["GO2_DASHBOARD_D435I_DEPTH_TOPIC"], "/d435/depth")
+        self.assertEqual(environment["GO2_DASHBOARD_D435I_CAMERA_INFO_TOPIC"], "/d435/info")
         self.assertEqual(environment["GO2_DASHBOARD_SCAN_TOPIC"], "/lidar/scan")
         self.assertEqual(environment["GO2_DASHBOARD_CLOUD_TOPIC"], "/lidar/cloud")
         self.assertEqual(environment["GO2_DASHBOARD_MAP_TOPIC"], "/lab/map")
+        self.assertEqual(
+            environment["GO2_DASHBOARD_POSE_TOPIC"], "/lab/map_pose"
+        )
         self.assertEqual(environment["GO2_DASHBOARD_ODOM_TOPIC"], "/go2/odom")
         self.assertEqual(environment["GO2_DASHBOARD_NAV_STATUS_TOPIC"], "/nav/status")
+        self.assertEqual(environment["GO2_DASHBOARD_INITIAL_POSE_TOPIC"], "/lab/initialpose")
+        self.assertEqual(environment["GO2_DASHBOARD_MAP_LIFECYCLE_TOPIC"], "/lab/map/lifecycle")
+        self.assertEqual(environment["GO2_DASHBOARD_INITIAL_POSE_MAPS_DIR"], "/tmp/robonix-maps")
+        self.assertEqual(environment["GO2_DASHBOARD_INITIAL_POSE_AUTO_RESTORE"], "1")
         self.assertEqual(environment["GO2_DASHBOARD_MAP_FRAME"], "lab_map")
         self.assertEqual(environment["GO2_DASHBOARD_BASE_FRAME"], "go2_base")
         self.assertEqual(
@@ -105,6 +123,14 @@ class ProviderRuntimeTests(unittest.TestCase):
         self.assertEqual(config.url, "https://go2.example.test/telemetry")
         self.assertEqual(config.health_url, "http://127.0.0.1:9102/healthz")
 
+    def test_pose_topic_has_safe_default(self) -> None:
+        config = DashboardConfig.from_mapping({})
+        self.assertEqual(config.pose_topic, "/robonix/map/pose")
+        self.assertEqual(
+            config.child_environment({})["GO2_DASHBOARD_POSE_TOPIC"],
+            "/robonix/map/pose",
+        )
+
     def test_config_rejects_unknown_or_unsafe_values(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown"):
             DashboardConfig.from_mapping({"secret": "must-not-be-accepted"})
@@ -114,6 +140,8 @@ class ProviderRuntimeTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "absolute"):
             DashboardConfig.from_mapping({"camera_topic": "relative/image"})
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            DashboardConfig.from_mapping({"pose_topic": "relative/pose"})
         with self.assertRaisesRegex(ValueError, "between"):
             DashboardConfig.from_mapping({"port": 70000})
         with self.assertRaisesRegex(ValueError, "without credentials"):

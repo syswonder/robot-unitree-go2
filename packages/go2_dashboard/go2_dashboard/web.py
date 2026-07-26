@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .initial_pose_store import InitialPoseError
 from .ros_bridge import RosBridge, RosConfig
 from .state import DashboardState
 from .voice_gateway import (
@@ -51,6 +52,16 @@ class SemanticTaskUpdate(BaseModel):
     pose: SemanticPose | None = None
 
 
+class InitialPoseRestoreRequest(BaseModel):
+    map_id: str = Field(min_length=1, max_length=160)
+    generation: int = Field(ge=0, le=(1 << 64) - 1)
+
+
+class InitialPoseResetRequest(BaseModel):
+    confirm_map_id: str = Field(min_length=1, max_length=160)
+    generation: int = Field(ge=0, le=(1 << 64) - 1)
+
+
 def _model_dict(model: BaseModel) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()  # type: ignore[attr-defined,no-any-return]
@@ -64,7 +75,10 @@ def create_app(
     voice_gateway: BrowserVoiceGateway | None = None,
 ) -> FastAPI:
     ros_config = config or RosConfig.from_environment()
-    dashboard_state = state or DashboardState(ros_config.topic_specs())
+    dashboard_state = state or DashboardState(
+        ros_config.topic_specs(),
+        deployment_profile=os.environ.get("GO2_DASHBOARD_PROFILE", "integrated"),
+    )
     bridge = RosBridge(dashboard_state, ros_config)
     voice = voice_gateway or BrowserVoiceGateway(
         dashboard_state, voice_config or VoiceConfig.from_environment()
@@ -113,6 +127,7 @@ def create_app(
                     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
                 ),
                 "Referrer-Policy": "no-referrer",
+                "Permissions-Policy": "microphone=(self)",
                 "X-Content-Type-Options": "nosniff",
                 "X-Frame-Options": "DENY",
             },
@@ -128,6 +143,7 @@ def create_app(
                 "telemetry_read_only": True,
                 "ros_connected": bool(snapshot["bridge"]["connected"]),
                 "browser_voice_enabled": bool(snapshot["voice"]["enabled"]),
+                "profile": snapshot["profile"],
                 "version": __version__,
             },
             headers={"Cache-Control": "no-store"},
@@ -153,17 +169,58 @@ def create_app(
             },
         )
 
+    @app.get("/api/cameras/{stream}.jpg")
+    async def camera_stream(
+        stream: Literal["go2", "d435i-color", "d435i-depth"],
+        sequence: int | None = None,
+    ) -> Response:
+        key = {
+            "go2": "camera",
+            "d435i-color": "d435i_color",
+            "d435i-depth": "d435i_depth",
+        }[stream]
+        image, current_sequence = dashboard_state.camera_image(key)
+        if image is None:
+            raise HTTPException(
+                status_code=503, detail=f"{stream} camera frame unavailable"
+            )
+        if sequence is not None and sequence != current_sequence:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "camera snapshot changed; refresh status before requesting "
+                    "the image"
+                ),
+                headers={"X-Telemetry-Sequence": str(current_sequence)},
+            )
+        return Response(
+            content=image,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Telemetry-Sequence": str(current_sequence),
+            },
+        )
+
     @app.get("/api/map.png")
-    async def map_preview() -> Response:
-        image, sequence = dashboard_state.map_image()
+    async def map_preview(sequence: int | None = None) -> Response:
+        image, current_sequence = dashboard_state.map_image()
         if image is None:
             raise HTTPException(status_code=503, detail="map unavailable")
+        if sequence is not None and sequence != current_sequence:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "map snapshot changed; refresh status before requesting the image"
+                ),
+                headers={"X-Telemetry-Sequence": str(current_sequence)},
+            )
         return Response(
             content=image,
             media_type="image/png",
             headers={
                 "Cache-Control": "no-store",
-                "X-Telemetry-Sequence": str(sequence),
+                "X-Telemetry-Sequence": str(current_sequence),
             },
         )
 
@@ -189,6 +246,36 @@ def create_app(
         except (KeyError, TypeError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/initial-pose")
+    async def initial_pose_status() -> JSONResponse:
+        return JSONResponse(
+            bridge.initial_pose_status(), headers={"Cache-Control": "no-store"}
+        )
+
+    @app.post("/api/initial-pose/restore", status_code=202)
+    async def restore_initial_pose(
+        request: InitialPoseRestoreRequest,
+    ) -> JSONResponse:
+        try:
+            status = bridge.request_initial_pose_restore(
+                **_model_dict(request)
+            )
+        except InitialPoseError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return JSONResponse(
+            status, status_code=202, headers={"Cache-Control": "no-store"}
+        )
+
+    @app.post("/api/initial-pose/reset")
+    async def reset_initial_pose(
+        request: InitialPoseResetRequest,
+    ) -> JSONResponse:
+        try:
+            status = bridge.reset_initial_pose(**_model_dict(request))
+        except InitialPoseError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return JSONResponse(status, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/voice")
     async def browser_voice_status() -> JSONResponse:
