@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <cstring>
@@ -25,14 +26,44 @@ namespace {
 
 constexpr const char *kRequiredMotionAcknowledgement =
     "GO2_PHYSICAL_MOTION_APPROVED";
+constexpr float kCommissioningMaxVx = 0.05F;
+constexpr float kCommissioningMaxVy = 0.0F;
+constexpr float kCommissioningMaxWz = 0.0F;
+constexpr std::uint64_t kCommissioningMaxMotionMs = 2'000U;
+constexpr const char *kFirstMotionProfile =
+    "workstation-first-motion-corrected-v1";
+constexpr const char *kSecondMotionProfile =
+    "workstation-second-motion-corrected-v1";
+constexpr float kSecondMotionMaxVx = 0.30F;
+constexpr float kSecondMotionMaxVy = 0.0F;
+constexpr float kSecondMotionMaxWz = 0.0F;
+constexpr std::uint64_t kSecondMotionMaxMotionMs = 1'500U;
+constexpr const char *kStagedNav2Profile =
+    "workstation-staged-nav2-corrected-v1";
+constexpr float kStagedNav2MaxVx = 0.30F;
+constexpr float kStagedNav2MaxVy = 0.0F;
+constexpr float kStagedNav2MaxWz = 0.40F;
+// Zero disables only the whole-navigation-session deadline.  The independent
+// 300 ms daemon watchdog remains mandatory.
+constexpr std::uint64_t kStagedNav2MaxMotionMs = 0U;
 std::atomic<bool> g_shutdown_requested{false};
 
 struct Options {
   std::string socket_path;
   std::string network_interface;
   bool allow_motion{false};
+  bool preserve_classic_walk{false};
   std::string acknowledgement;
+  std::string motion_profile{kFirstMotionProfile};
   std::uint64_t watchdog_ms{300U};
+  float max_vx{0.0F};
+  float max_vy{0.0F};
+  float max_wz{0.0F};
+  std::uint64_t max_motion_ms{0U};
+  bool has_max_vx{false};
+  bool has_max_vy{false};
+  bool has_max_wz{false};
+  bool has_max_motion_ms{false};
 };
 
 std::uint64_t MonotonicNowNs() {
@@ -51,7 +82,12 @@ void PrintUsage(const char *program) {
       << "Usage: " << program
       << " --socket ABSOLUTE_PATH [--watchdog-ms 100..1000]"
          " [--allow-motion --interface IFACE"
-         " --motion-ack GO2_PHYSICAL_MOTION_APPROVED]\n";
+         " --motion-ack GO2_PHYSICAL_MOTION_APPROVED"
+         " [--motion-profile workstation-second-motion-corrected-v1|"
+         "workstation-staged-nav2-corrected-v1]"
+         " [--preserve-classic-walk]"
+         " --max-vx PROFILE_MAX --max-vy 0 --max-wz PROFILE_MAX"
+         " --max-motion-ms PROFILE_MAX_MS]\n";
 }
 
 Options ParseOptions(int argc, char **argv) {
@@ -64,16 +100,51 @@ Options ParseOptions(int argc, char **argv) {
       }
       return argv[++index];
     };
+    const auto require_float = [&](const char *name) -> float {
+      const std::string text = require_value(name);
+      std::size_t consumed = 0U;
+      const float value = std::stof(text, &consumed);
+      if (consumed != text.size() || !std::isfinite(value)) {
+        throw std::runtime_error(std::string("invalid value for ") + name);
+      }
+      return value;
+    };
+    const auto require_uint64 = [&](const char *name) -> std::uint64_t {
+      const std::string text = require_value(name);
+      std::size_t consumed = 0U;
+      const std::uint64_t value = std::stoull(text, &consumed, 10);
+      if (consumed != text.size() || text.empty() || text.front() == '-' ||
+          text.front() == '+') {
+        throw std::runtime_error(std::string("invalid value for ") + name);
+      }
+      return value;
+    };
     if (argument == "--socket") {
       options.socket_path = require_value("--socket");
     } else if (argument == "--interface") {
       options.network_interface = require_value("--interface");
     } else if (argument == "--watchdog-ms") {
-      options.watchdog_ms = std::stoull(require_value("--watchdog-ms"));
+      options.watchdog_ms = require_uint64("--watchdog-ms");
+    } else if (argument == "--max-vx") {
+      options.max_vx = require_float("--max-vx");
+      options.has_max_vx = true;
+    } else if (argument == "--max-vy") {
+      options.max_vy = require_float("--max-vy");
+      options.has_max_vy = true;
+    } else if (argument == "--max-wz") {
+      options.max_wz = require_float("--max-wz");
+      options.has_max_wz = true;
+    } else if (argument == "--max-motion-ms") {
+      options.max_motion_ms = require_uint64("--max-motion-ms");
+      options.has_max_motion_ms = true;
     } else if (argument == "--allow-motion") {
       options.allow_motion = true;
+    } else if (argument == "--preserve-classic-walk") {
+      options.preserve_classic_walk = true;
     } else if (argument == "--motion-ack") {
       options.acknowledgement = require_value("--motion-ack");
+    } else if (argument == "--motion-profile") {
+      options.motion_profile = require_value("--motion-profile");
     } else if (argument == "--help" || argument == "-h") {
       PrintUsage(argv[0]);
       std::exit(0);
@@ -95,6 +166,46 @@ Options ParseOptions(int argc, char **argv) {
   if (options.allow_motion &&
       options.acknowledgement != kRequiredMotionAcknowledgement) {
     throw std::runtime_error("exact --motion-ack value is required");
+  }
+  if (!go2_chassis::MotionWatchdogDeploymentEligible(
+          options.allow_motion, options.watchdog_ms)) {
+    throw std::runtime_error(
+        "motion profiles require the exact audited 300 ms watchdog");
+  }
+  if (options.allow_motion &&
+      (!options.has_max_vx || !options.has_max_vy || !options.has_max_wz ||
+       !options.has_max_motion_ms)) {
+    throw std::runtime_error(
+        "motion requires every fixed commissioning envelope argument");
+  }
+  const bool first_motion_envelope =
+      options.motion_profile == kFirstMotionProfile &&
+      !(options.max_vx != kCommissioningMaxVx ||
+        options.max_vy != kCommissioningMaxVy ||
+        options.max_wz != kCommissioningMaxWz ||
+        options.max_motion_ms != kCommissioningMaxMotionMs);
+  const bool second_motion_envelope =
+      options.motion_profile == kSecondMotionProfile &&
+      options.max_vx == kSecondMotionMaxVx &&
+      options.max_vy == kSecondMotionMaxVy &&
+      options.max_wz == kSecondMotionMaxWz &&
+      options.max_motion_ms == kSecondMotionMaxMotionMs;
+  const bool staged_nav2_envelope =
+      options.motion_profile == kStagedNav2Profile &&
+      options.max_vx == kStagedNav2MaxVx &&
+      options.max_vy == kStagedNav2MaxVy &&
+      options.max_wz == kStagedNav2MaxWz &&
+      options.max_motion_ms == kStagedNav2MaxMotionMs;
+  if (options.allow_motion &&
+      !first_motion_envelope && !second_motion_envelope &&
+      !staged_nav2_envelope) {
+    throw std::runtime_error(
+        "motion envelope does not match the selected audited profile");
+  }
+  if (options.preserve_classic_walk &&
+      (!options.allow_motion || options.motion_profile != kStagedNav2Profile)) {
+    throw std::runtime_error(
+        "--preserve-classic-walk requires the staged Nav2 motion profile");
   }
   return options;
 }
@@ -193,7 +304,14 @@ void SendReply(int descriptor, const go2_chassis::ReplyPacket &reply) {
 int Run(const Options &options, go2_chassis::ISportClient &client) {
   go2_chassis::DaemonConfig daemon_config;
   daemon_config.allow_motion = options.allow_motion;
+  daemon_config.repeatable_arm =
+      options.motion_profile == kStagedNav2Profile;
+  daemon_config.preserve_classic_walk = options.preserve_classic_walk;
   daemon_config.watchdog_ns = options.watchdog_ms * 1'000'000ULL;
+  daemon_config.max_vx = options.max_vx;
+  daemon_config.max_vy = options.max_vy;
+  daemon_config.max_wz = options.max_wz;
+  daemon_config.max_motion_ns = options.max_motion_ms * 1'000'000ULL;
   go2_chassis::DaemonCore core(daemon_config, client);
 
   const std::filesystem::path socket_path(options.socket_path);
@@ -205,6 +323,20 @@ int Run(const Options &options, go2_chassis::ISportClient &client) {
 
   const auto cleanup = [&]() {
     core.OnDisconnect();
+    // OnDisconnect performs the primary stop plus one immediate retry.  A
+    // process shutdown must not silently turn a missing StopMove reply into a
+    // successful stop, so make a few more bounded attempts before tearing down
+    // the SDK process.  Each SDK call already has its own short timeout.
+    constexpr int kShutdownStopRetries = 3;
+    for (int attempt = 0;
+         attempt < kShutdownStopRetries && core.stop_unconfirmed(); ++attempt) {
+      (void)core.CheckWatchdog(MonotonicNowNs());
+    }
+    if (core.stop_unconfirmed()) {
+      std::cerr << "SAFETY FAULT: StopMove acknowledgement remained "
+                   "unconfirmed during bounded daemon shutdown; local "
+                   "controller is disarmed\n";
+    }
     if (peer >= 0) {
       ::close(peer);
       peer = -1;

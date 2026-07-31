@@ -135,6 +135,11 @@ services = {item["name"]: item for item in manifest["service"]}
 assert services["mapping"]["manifest"] == "package_manifest.jetson-native.yaml"
 assert services["navigation"]["manifest"] == "package_manifest.jetson-native.yaml"
 assert services["navigation"]["config"]["velocity_output_topic"] == "/robonix/nomotion/cmd_vel"
+mapping_config = services["mapping"]["config"]
+dashboard_config = services["go2_dashboard"]["config"]
+assert dashboard_config["pose_topic"] == "/robonix/map/pose"
+assert dashboard_config["map_frame"] == "map"
+assert dashboard_config["base_frame"] == mapping_config["base_frame"]
 assert "scene" not in manifest["system"]
 
 strings: list[str] = []

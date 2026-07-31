@@ -102,6 +102,20 @@ def status_output(
     }
 
 
+def provider_terminal_output(
+    state: str,
+    run_id: str = "semantic-run-1",
+    target: str = "自动售货机",
+) -> dict:
+    return {
+        "semantic_run_id": run_id,
+        "state": state,
+        "landmark": target,
+        "remote_state": state,
+        "remote_terminal": True,
+    }
+
+
 def call(result: dict) -> dict:
     return result["rtdl"]["children"][0]
 
@@ -123,6 +137,34 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(call(result)["cap"], NAV_CAPABILITY)
         self.assertEqual(call(result)["args"], {"name": "自动售货机"})
         self.assertEqual(result["task_update"]["status"], "in_progress")
+
+    def test_preview_recognizes_unverified_target_without_any_capability_leaf(self) -> None:
+        result = decide(
+            self.base(),
+            store(verified=False),
+            execution_mode="preview",
+        ).envelope
+        self.assertEqual(result["rtdl"]["children"], [])
+        self.assertEqual(result["task_update"]["goal"], "语义导航预览：自动售货机")
+        self.assertEqual(result["task_update"]["status"], "done")
+        self.assertIn("GO2_ALLOW_MOTION=false", result["content"])
+        self.assertIn("尚无物理验证 approach Pose", result["content"])
+        self.assertIn("未调用 Robonix navigation", result["content"])
+
+    def test_preview_rejects_unknown_target_without_any_capability_leaf(self) -> None:
+        messages = [self.system(), {"role": "user", "content": "去窗边"}]
+        result = decide(
+            messages,
+            store(),
+            execution_mode="preview",
+        ).envelope
+        self.assertEqual(result["rtdl"]["children"], [])
+        self.assertIsNone(result["task_update"])
+        self.assertIn("未找到唯一语义目标", result["content"])
+
+    def test_unknown_execution_mode_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "preview or live"):
+            decide(self.base(), store(), execution_mode="maybe")
 
     def test_unverified_landmark_never_dispatches(self) -> None:
         result = decide(self.base(), store(verified=False)).envelope
@@ -151,6 +193,66 @@ class DecisionTests(unittest.TestCase):
         ).envelope
         self.assertEqual(call(result)["cap"], STATUS_CAPABILITY)
         self.assertEqual(call(result)["args"], {"run_id": "semantic-run-1"})
+
+    def test_running_navigate_completion_polls_status_by_detail_id(self) -> None:
+        result = decide(
+            self.base() + [leaf(NAV_CONTRACT, status_output("RUNNING"))],
+            store(),
+        ).envelope
+        self.assertEqual(call(result)["cap"], STATUS_CAPABILITY)
+        self.assertEqual(call(result)["args"], {"run_id": "semantic-run-1"})
+
+    def test_succeeded_navigate_completion_is_terminal_success(self) -> None:
+        result = decide(
+            self.base() + [leaf(NAV_CONTRACT, status_output("SUCCEEDED"))],
+            store(),
+        ).envelope
+        self.assertEqual(result["rtdl"]["children"], [])
+        self.assertEqual(result["task_update"]["status"], "done")
+        self.assertIn("SUCCEEDED", result["content"])
+        self.assertIn("已到达目标并停止", result["content"])
+        self.assertNotIn("拒绝", result["content"])
+
+    def test_provider_terminal_failed_navigate_leaf_is_done_without_hold(self) -> None:
+        for state in ("FAILED", "CANCELED"):
+            with self.subTest(state=state):
+                result = decide(
+                    self.base()
+                    + [
+                        leaf(
+                            NAV_CONTRACT,
+                            provider_terminal_output(state),
+                            success=False,
+                        )
+                    ],
+                    store(),
+                ).envelope
+                self.assertEqual(result["rtdl"]["children"], [])
+                self.assertEqual(result["task_update"]["status"], "done")
+                self.assertIn(state, result["content"])
+                self.assertIn("任务已终止", result["content"])
+                self.assertNotIn("safety hold", result["rtdl_description"])
+
+    def test_only_explicit_false_navigation_ack_is_called_rejected(self) -> None:
+        rejected = decide(
+            self.base()
+            + [
+                leaf(
+                    NAV_CONTRACT,
+                    {"accepted": False, "run_id": "", "detail": "rejected"},
+                )
+            ],
+            store(),
+        ).envelope
+        self.assertIn("明确拒绝", rejected["content"])
+
+        missing = decide(
+            self.base() + [leaf(NAV_CONTRACT, {"detail": "opaque"})],
+            store(),
+        ).envelope
+        self.assertNotIn("拒绝", missing["content"])
+        self.assertIn("缺少可验证", missing["content"])
+        self.assertEqual(missing["task_update"]["status"], "in_progress")
 
     def test_running_status_recovers_run_id_and_polls_again(self) -> None:
         messages = self.base() + [

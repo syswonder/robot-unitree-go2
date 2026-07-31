@@ -28,6 +28,15 @@ class StaticSafetyTests(unittest.TestCase):
         self.assertNotIn("GO2_ALLOW_MOTION", source)
         self.assertNotIn("sudo", source)
         self.assertNotIn("ros2 ", source)
+        self.assertIn('SEMANTIC_INTENT_EXECUTION_MODE:-preview', source)
+        self.assertIn('--execution-mode "$EXECUTION_MODE"', source)
+
+    def test_preview_policy_has_no_capability_call(self) -> None:
+        source = (ROOT / "semantic_intent_router" / "server.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('execution_mode: str = "preview"', source)
+        self.assertIn("motion-disabled semantic preview: no capability calls", source)
 
 
 if __name__ == "__main__":

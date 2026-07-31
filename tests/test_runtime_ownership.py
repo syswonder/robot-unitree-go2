@@ -1,131 +1,131 @@
 from __future__ import annotations
 
-import os
+from contextlib import redirect_stderr, redirect_stdout
+import importlib.util
+from io import StringIO
 from pathlib import Path
-import subprocess
-import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CHECKER = ROOT / "scripts" / "check_runtime_ownership.sh"
+CHECKER = ROOT / "scripts" / "check_runtime_ownership.py"
+WRAPPER = ROOT / "scripts" / "check_runtime_ownership.sh"
+
+
+def load_checker():
+    spec = importlib.util.spec_from_file_location(
+        "check_runtime_ownership_under_test", CHECKER
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {CHECKER}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class RuntimeOwnershipTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        self.fake_bin = Path(self.temporary.name) / "bin"
-        self.fake_bin.mkdir()
-        fake_ros2 = self.fake_bin / "ros2"
-        fake_ros2.write_text(
-            "#!/usr/bin/env bash\n"
-            "topic=\"${@: -1}\"\n"
-            "case \"$topic\" in\n"
-            "  /camera/color/image_raw|/camera/color/camera_info) count=${CAMERA_COUNT:-0} ;;\n"
-            "  /scanner/cloud|/scanner/imu) count=${SENSOR_COUNT:-0} ;;\n"
-            "  /odom) count=${ODOM_COUNT:-0} ;;\n"
-            "  /tf_static) count=${TF_STATIC_COUNT:-0} ;;\n"
-            "  *) printf \"Unknown topic '%s'\\n\" \"$topic\" >&2; exit 1 ;;\n"
-            "esac\n"
-            "printf 'Type: offline/Fake\\nPublisher count: %s\\nSubscription count: 0\\n' \"$count\"\n",
-            encoding="utf-8",
-        )
-        fake_ros2.chmod(0o755)
-
-    def tearDown(self) -> None:
-        self.temporary.cleanup()
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.checker = load_checker()
 
     def run_checker(
-        self, profile: str, phase: str = "pre", **counts: str
-    ) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
-        env.update(
-            {
-                "PATH": f"{self.fake_bin}:{env['PATH']}",
-                "GO2_OWNERSHIP_DISCOVERY_TIMEOUT_S": "3",
-                "GO2_OWNERSHIP_STABILITY_SAMPLES": "1",
-                "GO2_OWNERSHIP_QUERY_TIMEOUT_S": "1",
-                **counts,
-            }
-        )
-        return subprocess.run(
-            [str(CHECKER), profile, phase],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=10,
-        )
+        self, profile: str, phase: str, counts: tuple[int, ...]
+    ) -> tuple[int, str, str]:
+        output = StringIO()
+        errors = StringIO()
+        clock = iter((0.0, 0.0, 0.0))
+
+        def query_factory():
+            return lambda: counts, lambda: None
+
+        with redirect_stdout(output), redirect_stderr(errors):
+            status = self.checker.run(
+                profile,
+                phase,
+                environment={
+                    "GO2_OWNERSHIP_DISCOVERY_TIMEOUT_S": "1",
+                    "GO2_OWNERSHIP_STABILITY_SAMPLES": "1",
+                    "GO2_OWNERSHIP_QUERY_TIMEOUT_S": "1",
+                },
+                query_factory=query_factory,
+                monotonic=lambda: next(clock, 2.0),
+                sleep=lambda _seconds: None,
+            )
+        return status, output.getvalue(), errors.getvalue()
+
+    def test_low_level_checker_has_no_ros_communication_endpoints(self) -> None:
+        source = CHECKER.read_text(encoding="utf-8")
+        wrapper = WRAPPER.read_text(encoding="utf-8")
+        self.assertIn("_rclpy.Node(", source)
+        self.assertIn("get_count_publishers", source)
+        self.assertNotIn("from rclpy.node import Node", source)
+        self.assertNotIn("create_publisher", source)
+        self.assertNotIn("create_subscription", source)
+        self.assertNotIn("ros2 topic info", wrapper.replace("`", ""))
 
     def test_local_preflight_requires_an_empty_owned_graph(self) -> None:
-        result = self.run_checker("workstation-local")
-        self.assertEqual(result.returncode, 0, result.stderr)
+        status, output, errors = self.run_checker(
+            "workstation-local", "pre", (0, 0, 0, 0, 0, 0)
+        )
+        self.assertEqual(status, 0, errors)
+        self.assertIn("/odom publishers=0", output)
 
     def test_nx_sensor_owner_has_exactly_one_sensor_publisher(self) -> None:
-        result = self.run_checker(
-            "workstation-full-nx-sensors",
-            CAMERA_COUNT="1",
-            SENSOR_COUNT="1",
+        status, output, errors = self.run_checker(
+            "workstation-full-nx-sensors", "pre", (1, 1, 1, 1, 0, 0)
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("/odom publishers=0", result.stdout)
-        self.assertIn("/tf_static publishers=0", result.stdout)
-
-    def test_nx_full_owner_has_exactly_one_publisher_for_every_stream(self) -> None:
-        result = self.run_checker(
-            "workstation-ui-nx-full",
-            CAMERA_COUNT="1",
-            SENSOR_COUNT="1",
-            ODOM_COUNT="1",
-            TF_STATIC_COUNT="1",
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(status, 0, errors)
+        self.assertIn("/tf_static publishers=0", output)
 
     def test_duplicate_camera_publisher_fails_immediately(self) -> None:
-        result = self.run_checker(
-            "workstation-full-nx-sensors",
-            CAMERA_COUNT="2",
-            SENSOR_COUNT="1",
+        status, _output, errors = self.run_checker(
+            "workstation-full-nx-sensors", "pre", (2, 1, 1, 1, 0, 0)
         )
-        self.assertEqual(result.returncode, 5)
-        self.assertIn("publisher ownership violation", result.stderr)
+        self.assertEqual(status, 5)
+        self.assertIn("publisher ownership violation", errors)
 
-    def test_unknown_profile_is_rejected(self) -> None:
-        result = self.run_checker("automatic")
-        self.assertEqual(result.returncode, 2)
+    def test_unknown_profile_and_phase_are_rejected(self) -> None:
+        status, _output, errors = self.run_checker(
+            "automatic", "pre", (0, 0, 0, 0, 0, 0)
+        )
+        self.assertEqual(status, 2)
+        self.assertIn("unknown runtime ownership profile", errors)
+        status, _output, errors = self.run_checker(
+            "workstation-local", "automatic", (0, 0, 0, 0, 0, 0)
+        )
+        self.assertEqual(status, 2)
+        self.assertIn("ownership phase", errors)
 
     def test_post_start_requires_exactly_one_final_owner(self) -> None:
-        passed = self.run_checker(
-            "workstation-local",
+        status, output, errors = self.run_checker(
+            "workstation-full-nomotion-corrected",
             "post",
-            CAMERA_COUNT="1",
-            SENSOR_COUNT="1",
-            ODOM_COUNT="1",
-            TF_STATIC_COUNT="1",
+            (1, 1, 1, 1, 1, 1),
         )
-        self.assertEqual(passed.returncode, 0, passed.stderr)
-        missing = self.run_checker(
-            "workstation-local",
+        self.assertEqual(status, 0, errors)
+        self.assertIn("/odom publishers=1", output)
+
+        status, _output, errors = self.run_checker(
+            "workstation-full-nomotion-corrected",
             "post",
-            CAMERA_COUNT="1",
-            SENSOR_COUNT="1",
-            ODOM_COUNT="0",
-            TF_STATIC_COUNT="1",
+            (1, 1, 1, 1, 2, 1),
         )
-        self.assertEqual(missing.returncode, 6)
+        self.assertEqual(status, 5)
+        self.assertIn("publisher ownership violation: /odom", errors)
+
+        status, _output, errors = self.run_checker(
+            "workstation-full-nomotion-corrected",
+            "post",
+            (1, 1, 1, 1, 0, 1),
+        )
+        self.assertEqual(status, 6)
+        self.assertIn("discovery deadline expired", errors)
 
     def test_nx_sensors_only_post_start_omits_odom_and_tf(self) -> None:
-        result = self.run_checker(
-            "nx-sensors-only",
-            "post",
-            CAMERA_COUNT="1",
-            SENSOR_COUNT="1",
+        status, _output, errors = self.run_checker(
+            "nx-sensors-only", "post", (1, 1, 1, 1, 0, 0)
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_unknown_phase_is_rejected(self) -> None:
-        result = self.run_checker("workstation-local", "automatic")
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(status, 0, errors)
 
 
 if __name__ == "__main__":

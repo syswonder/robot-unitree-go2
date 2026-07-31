@@ -156,6 +156,13 @@ class JetsonFullNomotionProfileTests(unittest.TestCase):
             services["navigation"]["config"]["velocity_output_topic"],
             "/robonix/nomotion/cmd_vel",
         )
+        mapping_config = services["mapping"]["config"]
+        dashboard_config = services["go2_dashboard"]["config"]
+        self.assertEqual(dashboard_config["pose_topic"], "/robonix/map/pose")
+        self.assertEqual(dashboard_config["map_frame"], "map")
+        self.assertEqual(
+            dashboard_config["base_frame"], mapping_config["base_frame"]
+        )
 
         scalar_strings: list[str] = []
 
@@ -301,6 +308,9 @@ class JetsonFullNomotionProfileTests(unittest.TestCase):
             "profile[\"runtime\"]",
             "chassis[\"config\"][\"allow_motion\"] is False",
             'services["navigation"]["config"]["velocity_output_topic"]',
+            'dashboard_config["pose_topic"]',
+            'dashboard_config["map_frame"]',
+            'dashboard_config["base_frame"] == mapping_config["base_frame"]',
         ):
             self.assertIn(required, verifier)
 

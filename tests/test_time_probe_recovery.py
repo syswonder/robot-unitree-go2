@@ -38,6 +38,139 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def write_fake_low_level_ros_modules(root: Path) -> None:
+    files = {
+        "rclpy/__init__.py": (
+            "def init(*args, **kwargs):\n"
+            "    raise AssertionError('high-level rclpy.init used')\n"
+            "def spin_once(*args, **kwargs):\n"
+            "    raise AssertionError('high-level rclpy.spin_once used')\n"
+        ),
+        "rclpy/context.py": (
+            "class _Handle:\n"
+            "    def __enter__(self):\n        return self\n"
+            "    def __exit__(self, *args):\n        return False\n"
+            "class Context:\n"
+            "    def __init__(self):\n"
+            "        self.handle = _Handle()\n"
+            "        self._ok = False\n"
+            "    def init(self, args=None, initialize_logging=True):\n"
+            "        if initialize_logging:\n"
+            "            raise AssertionError('logging must remain disabled')\n"
+            "        self._ok = True\n"
+            "    def ok(self):\n        return self._ok\n"
+            "    def try_shutdown(self):\n        self._ok = False\n"
+            "    def destroy(self):\n        pass\n"
+        ),
+        "rclpy/node.py": (
+            "raise AssertionError('high-level rclpy.node must not be imported')\n"
+        ),
+        "rclpy/impl/__init__.py": "",
+        "rclpy/impl/implementation_singleton.py": (
+            "import os\n"
+            "from pathlib import Path\n"
+            "from types import SimpleNamespace\n"
+            "import time\n"
+            "_next_pointer = 1\n"
+            "class Node:\n"
+            "    def __init__(self, name, namespace, context, cli_args, "
+            "use_global_arguments, enable_rosout):\n"
+            "        if use_global_arguments or enable_rosout:\n"
+            "            raise AssertionError('unsafe low-level node options')\n"
+            "    def __enter__(self):\n        return self\n"
+            "    def __exit__(self, *args):\n        return False\n"
+            "    def destroy_when_not_in_use(self):\n        pass\n"
+            "class Subscription:\n"
+            "    def __init__(self, node, message_type, topic, qos):\n"
+            "        global _next_pointer\n"
+            "        self.pointer = _next_pointer\n"
+            "        _next_pointer += 1\n"
+            "        self.message_type = message_type\n"
+            "        self.taken = False\n"
+            "    def take_message(self, message_type, raw):\n"
+            "        if raw or message_type is not self.message_type:\n"
+            "            raise AssertionError('unexpected take_message request')\n"
+            "        if self.taken:\n            return None\n"
+            "        self.taken = True\n"
+            "        return (message_type(), None)\n"
+            "    def destroy_when_not_in_use(self):\n        pass\n"
+            "class WaitSet:\n"
+            "    def __init__(self, subscriptions, guards, timers, clients, "
+            "services, events, context):\n"
+            "        if (subscriptions, guards, timers, clients, services, events) "
+            "!= (5, 0, 0, 0, 0, 0):\n"
+            "            raise AssertionError('unexpected wait-set capacity')\n"
+            "        self.subscriptions = []\n"
+            "    def clear_entities(self):\n        self.subscriptions = []\n"
+            "    def add_subscription(self, subscription):\n"
+            "        self.subscriptions.append(subscription)\n"
+            "        if len(self.subscriptions) == 5:\n"
+            "            ready = os.environ.get('FAKE_ROS_READY')\n"
+            "            if ready:\n                Path(ready).touch()\n"
+            "    def wait(self, timeout_ns):\n"
+            "        emit = os.environ.get('FAKE_ROS_EMIT_MESSAGES') == '1'\n"
+            "        if not emit or all(item.taken for item in self.subscriptions):\n"
+            "            time.sleep(min(timeout_ns / 1_000_000_000, 0.05))\n"
+            "    def get_ready_entities(self, kind):\n"
+            "        if kind != 'subscription':\n"
+            "            raise AssertionError('unexpected entity kind')\n"
+            "        if os.environ.get('FAKE_ROS_EMIT_MESSAGES') != '1':\n"
+            "            return []\n"
+            "        return [item.pointer for item in self.subscriptions if not item.taken]\n"
+            "    def destroy_when_not_in_use(self):\n        pass\n"
+            "rclpy_implementation = SimpleNamespace(\n"
+            "    Node=Node, Subscription=Subscription, WaitSet=WaitSet)\n"
+        ),
+        "rclpy/qos.py": (
+            "class DurabilityPolicy:\n    VOLATILE = 1\n"
+            "class HistoryPolicy:\n    KEEP_LAST = 1\n"
+            "class ReliabilityPolicy:\n    BEST_EFFORT = 1\n"
+            "class QoSProfile:\n"
+            "    def __init__(self, **kwargs):\n        pass\n"
+            "    def get_c_qos_profile(self):\n        return object()\n"
+        ),
+        "rclpy/type_support.py": (
+            "def check_is_valid_msg_type(message_type):\n"
+            "    if not isinstance(message_type, type):\n"
+            "        raise AssertionError('invalid fake message type')\n"
+        ),
+        "sensor_msgs/__init__.py": "",
+        "sensor_msgs/msg/__init__.py": (
+            "class _Stamp:\n"
+            "    sec = 100\n"
+            "    nanosec = 1\n"
+            "class _Header:\n"
+            "    def __init__(self):\n        self.stamp = _Stamp()\n"
+            "class Imu:\n"
+            "    def __init__(self):\n        self.header = _Header()\n"
+            "class PointCloud2:\n"
+            "    def __init__(self):\n        self.header = _Header()\n"
+        ),
+        "nav_msgs/__init__.py": "",
+        "nav_msgs/msg/__init__.py": (
+            "class _Stamp:\n"
+            "    sec = 100\n"
+            "    nanosec = 1\n"
+            "class _Header:\n"
+            "    def __init__(self):\n        self.stamp = _Stamp()\n"
+            "class Odometry:\n"
+            "    def __init__(self):\n        self.header = _Header()\n"
+        ),
+        "unitree_go/__init__.py": "",
+        "unitree_go/msg/__init__.py": (
+            "class _Stamp:\n"
+            "    sec = 100\n"
+            "    nanosec = 1\n"
+            "class SportModeState:\n"
+            "    def __init__(self):\n        self.stamp = _Stamp()\n"
+        ),
+    }
+    for relative, source in files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+
+
 class TimeProbeRecoveryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -162,47 +295,11 @@ class TimeProbeRecoveryTest(unittest.TestCase):
             fake_modules = temporary_path / "fake-modules"
             output = temporary_path / "evidence"
             ready = temporary_path / "fake-ros-ready"
-            files = {
-                "rclpy/__init__.py": (
-                    "import time\n"
-                    "_ok = True\n"
-                    "def init(args=None):\n    pass\n"
-                    "def ok():\n    return _ok\n"
-                    "def spin_once(node, timeout_sec=0.1):\n"
-                    "    time.sleep(min(timeout_sec, 0.05))\n"
-                    "def shutdown():\n"
-                    "    global _ok\n    _ok = False\n"
-                ),
-                "rclpy/node.py": (
-                    "import os\nfrom pathlib import Path\n"
-                    "class Node:\n"
-                    "    def __init__(self, name):\n"
-                    "        Path(os.environ['FAKE_ROS_READY']).touch()\n"
-                    "    def create_subscription(self, *args, **kwargs):\n"
-                    "        return object()\n"
-                    "    def destroy_node(self):\n        pass\n"
-                ),
-                "rclpy/qos.py": (
-                    "class DurabilityPolicy:\n    VOLATILE = 1\n"
-                    "class HistoryPolicy:\n    KEEP_LAST = 1\n"
-                    "class ReliabilityPolicy:\n    BEST_EFFORT = 1\n"
-                    "class QoSProfile:\n"
-                    "    def __init__(self, **kwargs):\n        pass\n"
-                ),
-                "sensor_msgs/__init__.py": "",
-                "sensor_msgs/msg/__init__.py": (
-                    "class Imu:\n    pass\nclass PointCloud2:\n    pass\n"
-                ),
-                "unitree_go/__init__.py": "",
-                "unitree_go/msg/__init__.py": "class SportModeState:\n    pass\n",
-            }
-            for relative, source in files.items():
-                path = fake_modules / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(source, encoding="utf-8")
+            write_fake_low_level_ros_modules(fake_modules)
             environment = os.environ.copy()
             environment["PYTHONPATH"] = str(fake_modules)
             environment["FAKE_ROS_READY"] = str(ready)
+            environment["FAKE_ROS_EMIT_MESSAGES"] = "0"
             process = subprocess.Popen(
                 [
                     sys.executable,
@@ -233,6 +330,59 @@ class TimeProbeRecoveryTest(unittest.TestCase):
             self.assertFalse(summary["safe_for_clock_discipline"])
             self.assertEqual((output / "summary.json").stat().st_mode & 0o777, 0o600)
 
+    def test_offline_fake_low_level_waitset_records_all_five_streams(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = Path(temporary)
+            fake_modules = temporary_path / "fake-modules"
+            output = temporary_path / "evidence"
+            write_fake_low_level_ros_modules(fake_modules)
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(fake_modules)
+            environment["FAKE_ROS_EMIT_MESSAGES"] = "1"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "probe_go2_time_readonly.py"),
+                    "--output-dir",
+                    str(output),
+                    "--duration-seconds",
+                    "30",
+                    "--max-samples",
+                    "5",
+                ],
+                capture_output=True,
+                text=True,
+                env=environment,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+            metadata = json.loads(
+                (output / "metadata.json").read_text(encoding="utf-8")
+            )
+            summary = json.loads(
+                (output / "summary.json").read_text(encoding="utf-8")
+            )
+            samples = [
+                json.loads(line)
+                for line in (output / "samples.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertFalse(metadata["ros_publishers_created"])
+            self.assertEqual(summary["exit_reason"], "max_samples_reached")
+            self.assertEqual(summary["total_samples"], 5)
+            self.assertEqual(summary["cleanup_errors"], [])
+            self.assertEqual(len(samples), 5)
+            self.assertEqual(
+                {sample["stream"] for sample in samples},
+                set(probe.DEFAULT_TOPICS),
+            )
+            self.assertEqual(
+                {stream["stream"]: stream["received"] for stream in summary["streams"]},
+                {stream: 1 for stream in probe.DEFAULT_TOPICS},
+            )
+
     def test_wrapper_requests_graceful_term_and_preserves_status(self) -> None:
         source = (ROOT / "scripts" / "probe_go2_time_readonly.sh").read_text(
             encoding="utf-8"
@@ -240,6 +390,33 @@ class TimeProbeRecoveryTest(unittest.TestCase):
         self.assertIn("timeout --signal=TERM --kill-after=15s --preserve-status", source)
         self.assertIn('[[ -s "${OUTPUT_DIR}/summary.json" ]]', source)
         self.assertNotIn("timeout --signal=INT --kill-after=5s", source)
+
+    def test_four_qualification_streams_plus_fallback_are_configured(self) -> None:
+        arguments = probe.build_argument_parser().parse_args(
+            ["--output-dir", str(ROOT / "logs" / "unused-time-probe-test")]
+        )
+        self.assertEqual(arguments.primary_topic, "/sportmodestate")
+        self.assertEqual(arguments.fallback_topic, "/lf/sportmodestate")
+        self.assertEqual(arguments.cloud_topic, "/utlidar/cloud")
+        self.assertEqual(arguments.imu_topic, "/utlidar/imu")
+        self.assertEqual(arguments.odom_topic, "/utlidar/robot_odom")
+        self.assertEqual(
+            probe.QUALIFICATION_STREAMS,
+            ("sport_primary", "mid360_imu", "mid360_cloud", "mid360_odom"),
+        )
+        self.assertEqual(probe.WITNESS_STREAMS, ("sport_fallback",))
+
+        wrapper = (ROOT / "scripts" / "probe_go2_time_readonly.sh").read_text(
+            encoding="utf-8"
+        )
+        locator = (
+            ROOT / "scripts" / "collect_go2_publisher_locators_readonly.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("--odom-topic", wrapper)
+        self.assertIn("GO2_TIME_ODOM_TOPIC", wrapper)
+        self.assertIn("/utlidar/robot_odom", wrapper)
+        self.assertIn("/utlidar/robot_odom", locator)
+        self.assertIn("mid360_odom", locator)
 
     def test_sigterm_handler_restoration_covers_entire_probe(self) -> None:
         source = (ROOT / "scripts" / "probe_go2_time_readonly.py").read_text(

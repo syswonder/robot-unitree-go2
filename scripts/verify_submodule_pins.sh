@@ -45,11 +45,11 @@ verify_pin() {
 verify_pin \
   third_party/service-map-rbnx \
   third_party/service-map-rbnx \
-  https://github.com/Origamii520/service-map-rbnx.git
+  https://github.com/syswonder/service-map-rbnx.git
 verify_pin \
   third_party/service-navigation-rbnx \
   third_party/service-navigation-rbnx \
-  https://github.com/Origamii520/service-navigation-rbnx.git
+  https://github.com/syswonder/service-navigation-rbnx.git
 
 status="$(git -C "$ROOT" submodule status --recursive)"
 if grep -Eq '^[-+U]' <<<"$status"; then

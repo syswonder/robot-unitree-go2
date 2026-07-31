@@ -136,6 +136,32 @@ REQUIRED_CAPABILITIES: dict[str, frozenset[str]] = {
     ),
 }
 
+EXPECTED_PROVIDER_NAMESPACES = {
+    "go2_sensors": "robonix/primitive/lidar",
+}
+
+# go2_sensors deliberately owns one atomic lifecycle for the lidar relay, IMU
+# relay, and camera bridge.  Atlas therefore reports the two sibling-domain
+# ROS data contracts below as advisory namespace diagnostics.  Keep this
+# deployment exception exact: changing the provider, runtime namespace,
+# contract, or transport must fail readiness.
+ALLOWED_NAMESPACE_DIAGNOSTICS: frozenset[tuple[str, str, str, str]] = frozenset(
+    {
+        (
+            "go2_sensors",
+            "robonix/primitive/lidar",
+            "robonix/primitive/imu/imu",
+            "ros2",
+        ),
+        (
+            "go2_sensors",
+            "robonix/primitive/lidar",
+            "robonix/primitive/camera/rgb",
+            "ros2",
+        ),
+    }
+)
+
 
 @dataclass(frozen=True)
 class Check:
@@ -159,7 +185,7 @@ class TopicRequirement:
     label: str
     topic: str
     message_type: str
-    max_age_s: float
+    max_age_s: float | None
     expected_frame: str
     transient_local: bool = False
 
@@ -180,13 +206,20 @@ TOPICS = (
         "utlidar_lidar",
     ),
     TopicRequirement(
-        "imu", "/scanner/imu", "sensor_msgs/msg/Imu", 1.5, "imu"
+        "scan",
+        "/scanner/scan",
+        "sensor_msgs/msg/LaserScan",
+        1.0,
+        "base_link",
+    ),
+    TopicRequirement(
+        "imu", "/scanner/imu", "sensor_msgs/msg/Imu", 1.5, "utlidar_imu"
     ),
     TopicRequirement(
         "odom", "/odom", "nav_msgs/msg/Odometry", 1.5, "odom"
     ),
     TopicRequirement(
-        "map", "/map", "nav_msgs/msg/OccupancyGrid", 15.0, "map", True
+        "map", "/map", "nav_msgs/msg/OccupancyGrid", None, "map", True
     ),
 )
 
@@ -205,6 +238,12 @@ NAV_ACTIONS = {
     "/compute_path_to_pose": "nav2_msgs/action/ComputePathToPose",
     "/follow_path": "nav2_msgs/action/FollowPath",
 }
+
+CHASSIS_DIAGNOSTICS_TOPIC = "/diagnostics"
+CHASSIS_DIAGNOSTIC_NAME = "go2_chassis_adapter"
+CHASSIS_MAX_STATE_AGE_S = 0.20
+CHASSIS_MAX_SOURCE_STAMP_AGE_S = 0.20
+CHASSIS_MAX_SOURCE_FUTURE_SKEW_S = 0.05
 
 
 class CommandRunner:
@@ -513,6 +552,63 @@ def validate_dashboard(port: int) -> Check:
     topics = status.get("topics")
     if not isinstance(topics, dict):
         return _unknown(check_id, "/api/status has no topics object")
+    camera_quality = status.get("camera_quality")
+    if not isinstance(camera_quality, dict):
+        return _check(
+            check_id,
+            False,
+            "dashboard /api/status has no usable camera quality diagnostic",
+            camera_quality=camera_quality,
+        )
+    quality_level = camera_quality.get("level")
+    quality_message = camera_quality.get("message")
+    quality_rate_hz = camera_quality.get("rate_hz")
+    quality_error_ratio = camera_quality.get("quality_error_ratio")
+    quality_ready = camera_quality.get("ready")
+    quality_healthy = camera_quality.get("healthy")
+    level_ok = (
+        isinstance(quality_level, int)
+        and not isinstance(quality_level, bool)
+        and quality_level == 0
+    )
+    rate_ok = (
+        isinstance(quality_rate_hz, (int, float))
+        and not isinstance(quality_rate_hz, bool)
+        and math.isfinite(float(quality_rate_hz))
+        and float(quality_rate_hz) >= 0.0
+    )
+    ratio_ok = (
+        isinstance(quality_error_ratio, (int, float))
+        and not isinstance(quality_error_ratio, bool)
+        and math.isfinite(float(quality_error_ratio))
+        and 0.0 <= float(quality_error_ratio) <= 1.0
+    )
+    message_ok = quality_message == "camera quality gate passed"
+    quality_evidence = {
+        "ready": quality_ready,
+        "healthy": quality_healthy,
+        "level": quality_level,
+        "message": quality_message,
+        "rate_hz": quality_rate_hz,
+        "quality_error_ratio": quality_error_ratio,
+    }
+    if (
+        quality_ready is not True
+        or quality_healthy is not True
+        or not level_ok
+        or not message_ok
+        or not rate_ok
+        or not ratio_ok
+    ):
+        return _check(
+            check_id,
+            False,
+            "dashboard camera quality gate is not ready and healthy: "
+            f"level={quality_level!r} message={quality_message!r} "
+            f"rate_hz={quality_rate_hz!r} "
+            f"quality_error_ratio={quality_error_ratio!r}",
+            camera_quality=quality_evidence,
+        )
     required = ("camera", "point_cloud", "map", "odom", "pose_map")
     not_fresh = {
         name: topics.get(name, {}).get("state")
@@ -530,8 +626,10 @@ def validate_dashboard(port: int) -> Check:
     return _check(
         check_id,
         True,
-        "dashboard /api/status and /healthz report connected fresh telemetry",
+        "dashboard /api/status and /healthz report connected fresh telemetry "
+        "with a ready and healthy camera quality gate",
         topics=list(required),
+        camera_quality=quality_evidence,
     )
 
 
@@ -558,37 +656,163 @@ def validate_providers(payload: Any) -> Check:
     except ValueError as exc:
         return _unknown(check_id, str(exc))
     problems: dict[str, Any] = {}
+    accepted_namespace_diagnostics: list[dict[str, Any]] = []
+    unexpected_namespace_diagnostics: dict[str, list[dict[str, Any]]] = {}
+    invalid_namespace_diagnostic_flags: dict[str, list[dict[str, Any]]] = {}
+
+    def record_problem(provider_id: str, key: str, value: Any) -> None:
+        existing = problems.get(provider_id)
+        if existing is None:
+            problems[provider_id] = {key: value}
+        elif isinstance(existing, dict):
+            existing[key] = value
+        else:
+            problems[provider_id] = {"readiness": existing, key: value}
+
+    for provider_id, record in providers.items():
+        runtime_namespace = record.get("namespace")
+        capabilities = record.get("capabilities")
+        if not isinstance(capabilities, list):
+            continue
+        for index, item in enumerate(capabilities):
+            if not isinstance(item, dict):
+                invalid_namespace_diagnostic_flags.setdefault(
+                    provider_id, []
+                ).append(
+                    {
+                        "capability_index": index,
+                        "reason": "capability_not_object",
+                    }
+                )
+                continue
+            mismatch = item.get("namespace_mismatch")
+            if not isinstance(mismatch, bool):
+                invalid_namespace_diagnostic_flags.setdefault(
+                    provider_id, []
+                ).append(
+                    {
+                        "capability_index": index,
+                        "contract_id": item.get("contract_id"),
+                        "field_present": "namespace_mismatch" in item,
+                        "actual_type": type(mismatch).__name__,
+                    }
+                )
+                continue
+            if mismatch is not True:
+                continue
+            contract_id = item.get("contract_id")
+            transport = item.get("transport")
+            diagnostic = {
+                "provider_id": provider_id,
+                "runtime_namespace": runtime_namespace,
+                "contract_id": contract_id,
+                "transport": transport,
+            }
+            fields = (provider_id, runtime_namespace, contract_id, transport)
+            if (
+                all(isinstance(value, str) for value in fields)
+                and fields in ALLOWED_NAMESPACE_DIAGNOSTICS
+            ):
+                accepted_namespace_diagnostics.append(diagnostic)
+            else:
+                unexpected_namespace_diagnostics.setdefault(provider_id, []).append(
+                    diagnostic
+                )
+
+    diagnostic_sort_keys = (
+        "provider_id",
+        "runtime_namespace",
+        "contract_id",
+        "transport",
+    )
+    accepted_namespace_diagnostics.sort(
+        key=lambda value: tuple(str(value.get(key)) for key in diagnostic_sort_keys)
+    )
+    for diagnostics in unexpected_namespace_diagnostics.values():
+        diagnostics.sort(
+            key=lambda value: tuple(
+                str(value.get(key)) for key in diagnostic_sort_keys
+            )
+        )
+    for diagnostics in invalid_namespace_diagnostic_flags.values():
+        diagnostics.sort(key=lambda value: int(value["capability_index"]))
+
     for provider_id, required in REQUIRED_CAPABILITIES.items():
         record = providers.get(provider_id)
         if record is None:
             problems[provider_id] = "missing"
             continue
-        if record.get("state") != "ACTIVE":
-            problems[provider_id] = {
-                "state": record.get("state"),
-                "detail": str(record.get("state_detail", ""))[:200],
+        provider_problems: dict[str, Any] = {}
+        expected_namespace = EXPECTED_PROVIDER_NAMESPACES.get(provider_id)
+        if (
+            expected_namespace is not None
+            and record.get("namespace") != expected_namespace
+        ):
+            provider_problems["provider_namespace"] = {
+                "expected": expected_namespace,
+                "actual": record.get("namespace"),
             }
+        if record.get("state") != "ACTIVE":
+            provider_problems.update(
+                {
+                    "state": record.get("state"),
+                    "detail": str(record.get("state_detail", ""))[:200],
+                }
+            )
+            problems[provider_id] = provider_problems
             continue
         capabilities = record.get("capabilities")
         if not isinstance(capabilities, list):
-            problems[provider_id] = "capabilities unknown"
+            provider_problems["capabilities"] = "unknown"
+            problems[provider_id] = provider_problems
             continue
         found: set[str] = set()
-        mismatched: list[str] = []
         for item in capabilities:
             if not isinstance(item, dict):
                 continue
             contract_id = item.get("contract_id")
             if isinstance(contract_id, str):
                 found.add(contract_id)
-                if item.get("namespace_mismatch") is True:
-                    mismatched.append(contract_id)
         missing = sorted(required - found)
-        if missing or mismatched:
-            problems[provider_id] = {
-                "missing_capabilities": missing,
-                "namespace_mismatch": sorted(mismatched),
-            }
+        if missing:
+            provider_problems["missing_capabilities"] = missing
+        if provider_problems:
+            problems[provider_id] = provider_problems
+
+    for provider_id, diagnostics in unexpected_namespace_diagnostics.items():
+        record_problem(
+            provider_id, "unexpected_namespace_diagnostics", diagnostics
+        )
+    for provider_id, diagnostics in invalid_namespace_diagnostic_flags.items():
+        record_problem(
+            provider_id, "invalid_namespace_diagnostic_flags", diagnostics
+        )
+
+    expected_namespace_diagnostics = [
+        {
+            "provider_id": provider_id,
+            "runtime_namespace": runtime_namespace,
+            "contract_id": contract_id,
+            "transport": transport,
+        }
+        for provider_id, runtime_namespace, contract_id, transport in sorted(
+            ALLOWED_NAMESPACE_DIAGNOSTICS
+        )
+    ]
+    if accepted_namespace_diagnostics != expected_namespace_diagnostics:
+        # The deployment contract is not merely an allowlist.  Atlas must
+        # expose both audited sibling-domain diagnostics exactly once.  A
+        # missing/false flag or duplicate capability is therefore a failure,
+        # even when no third diagnostic is present.
+        record_problem(
+            "go2_sensors",
+            "namespace_diagnostics_exact_set",
+            {
+                "expected": expected_namespace_diagnostics,
+                "actual": accepted_namespace_diagnostics,
+            },
+        )
+
     for provider_id, record in providers.items():
         if record.get("state") in {"ERROR", "?", "TERMINATED"}:
             problems.setdefault(provider_id, {"state": record.get("state")})
@@ -598,12 +822,15 @@ def validate_providers(payload: Any) -> Check:
             False,
             "Atlas provider/capability readiness is incomplete",
             problems=problems,
+            accepted_namespace_diagnostics=accepted_namespace_diagnostics,
         )
     return _check(
         check_id,
         True,
-        "all required Atlas providers are ACTIVE with exact capabilities",
+        "all required Atlas providers are ACTIVE with exact capabilities "
+        "and audited namespace diagnostics",
         provider_count=len(REQUIRED_CAPABILITIES),
+        accepted_namespace_diagnostics=accepted_namespace_diagnostics,
     )
 
 
@@ -705,7 +932,7 @@ def validate_topic_header(
             "message stamp is too far in the future",
             age_s=round(age_s, 6),
         )
-    if age_s > requirement.max_age_s:
+    if requirement.max_age_s is not None and age_s > requirement.max_age_s:
         return _check(
             check_id,
             False,
@@ -713,10 +940,15 @@ def validate_topic_header(
             age_s=round(age_s, 6),
             max_age_s=requirement.max_age_s,
         )
+    detail = (
+        "valid event-driven snapshot with exact type/frame/stamp"
+        if requirement.max_age_s is None
+        else "fresh message with exact type/frame/stamp"
+    )
     return _check(
         check_id,
         True,
-        "fresh message with exact type/frame/stamp",
+        detail,
         topic=requirement.topic,
         frame_id=frame_id,
         age_s=round(max(0.0, age_s), 6),
@@ -763,6 +995,196 @@ def read_topic(requirement: TopicRequirement, runner: CommandRunner) -> Check:
     return validate_topic_header(requirement, header, time.time())
 
 
+def _diagnostic_integer(value: Any, label: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} is not an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdecimal():
+        return int(value.strip(), 10)
+    raise ValueError(f"{label} is not an integer")
+
+
+def _diagnostic_uint8(value: Any, label: str) -> int:
+    """Decode a ROS uint8 scalar without accepting ambiguous text values."""
+    if isinstance(value, bool):
+        raise ValueError(f"{label} is not a uint8")
+    if isinstance(value, int):
+        if 0 <= value <= 255:
+            return value
+        raise ValueError(f"{label} is outside uint8 range")
+    if isinstance(value, str) and len(value) == 1 and ord(value) <= 255:
+        return ord(value)
+    raise ValueError(f"{label} is not a single-character uint8")
+
+
+def _diagnostic_float(values: Mapping[str, str], key: str) -> float:
+    value = values.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"{key} is absent")
+    try:
+        result = float(value)
+    except ValueError as exc:
+        raise ValueError(f"{key} is not numeric") from exc
+    if not math.isfinite(result):
+        raise ValueError(f"{key} is not finite")
+    return result
+
+
+def validate_chassis_health_document(document: Mapping[str, Any]) -> Check:
+    """Require fresh chassis diagnostics and a fail-closed marker policy."""
+    check_id = "ros_chassis_health"
+    statuses = document.get("status")
+    if not isinstance(statuses, list):
+        return _unknown(check_id, "diagnostic array has no status list")
+    matches = [
+        value
+        for value in statuses
+        if isinstance(value, dict) and value.get("name") == CHASSIS_DIAGNOSTIC_NAME
+    ]
+    if len(matches) != 1:
+        return _unknown(
+            check_id,
+            "expected exactly one Go2 chassis diagnostic status",
+            matches=len(matches),
+        )
+    status = matches[0]
+    entries = status.get("values")
+    if not isinstance(entries, list):
+        return _unknown(check_id, "chassis diagnostic values are absent")
+    values: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return _unknown(check_id, "chassis diagnostic value is malformed")
+        key = entry.get("key")
+        value = entry.get("value")
+        if not isinstance(key, str) or not isinstance(value, str) or key in values:
+            return _unknown(
+                check_id,
+                "chassis diagnostic key/value is invalid or duplicated",
+            )
+        values[key] = value
+    try:
+        level = _diagnostic_uint8(status.get("level"), "diagnostic level")
+        error_code = _diagnostic_integer(
+            values.get("sport_error_code"), "sport_error_code"
+        )
+        state_age = _diagnostic_float(values, "state_age_sec")
+        state_timeout = _diagnostic_float(values, "state_timeout_sec")
+        source_age_limit = _diagnostic_float(values, "max_source_stamp_age_sec")
+        future_skew_limit = _diagnostic_float(
+            values, "max_source_stamp_future_skew_sec"
+        )
+    except ValueError as exc:
+        return _unknown(check_id, str(exc))
+
+    reasons: list[str] = []
+    # The passive adapter reports WARN solely because motion is intentionally
+    # disabled. ERROR still fails, as do the explicit health fields below.
+    if level not in {0, 1}:
+        reasons.append("diagnostic level is ERROR or invalid")
+    # Unitree exposes ``SportModeState.error_code`` as an opaque firmware state
+    # marker on currently observed Go2 firmware.  Zero is accepted directly.
+    # A non-zero value is accepted only when the adapter proves that this exact
+    # value was explicitly allowlisted for the current session and that no
+    # marker transition has been latched since arming/disarming.  This mirrors
+    # the adapter's fail-closed StateMarkerPolicy instead of treating every
+    # non-zero marker as a fault or, conversely, trusting it without evidence.
+    marker_explicitly_allowed = (
+        values.get("opaque_state_marker_explicitly_allowed") == "true"
+    )
+    marker_change_latched = values.get("opaque_state_marker_change_latched")
+    marker_bound_raw = values.get("opaque_state_marker_bound")
+    marker_bound: int | None = None
+    if marker_change_latched == "true":
+        reasons.append("opaque firmware state marker change is latched")
+    if error_code != 0:
+        if not marker_explicitly_allowed:
+            reasons.append("non-zero firmware state marker is not explicitly allowed")
+        if marker_change_latched != "false":
+            reasons.append("non-zero firmware state marker has no unlatched proof")
+        try:
+            marker_bound = _diagnostic_integer(
+                marker_bound_raw, "opaque_state_marker_bound"
+            )
+        except ValueError:
+            reasons.append("non-zero firmware state marker has no exact bound marker")
+        else:
+            if marker_bound != error_code:
+                reasons.append("bound firmware state marker does not match current marker")
+    if values.get("state_valid") != "true":
+        reasons.append("state_valid is not true")
+    if values.get("source_stamp_status") != "fresh":
+        reasons.append("source timestamp is not fresh")
+    if not 0.0 <= state_age <= CHASSIS_MAX_STATE_AGE_S:
+        reasons.append("state age exceeds the 0.20 s navigation ceiling")
+    if not 0.0 < state_timeout <= CHASSIS_MAX_STATE_AGE_S:
+        reasons.append("state timeout is not only-tighten")
+    if not 0.0 < source_age_limit <= CHASSIS_MAX_SOURCE_STAMP_AGE_S:
+        reasons.append("source stamp age limit is not only-tighten")
+    if not 0.0 <= future_skew_limit <= CHASSIS_MAX_SOURCE_FUTURE_SKEW_S:
+        reasons.append("source future-skew limit is not only-tighten")
+    if reasons:
+        return _check(
+            check_id,
+            False,
+            "; ".join(reasons),
+            sport_error_code=error_code,
+            opaque_state_marker_explicitly_allowed=marker_explicitly_allowed,
+            opaque_state_marker_change_latched=marker_change_latched,
+            opaque_state_marker_bound=marker_bound_raw,
+            state_age_sec=state_age,
+            state_timeout_sec=state_timeout,
+            max_source_stamp_age_sec=source_age_limit,
+            max_source_stamp_future_skew_sec=future_skew_limit,
+        )
+    return _check(
+        check_id,
+        True,
+        "fresh chassis state with fail-closed marker policy and only-tighten runtime limits",
+        sport_error_code=error_code,
+        opaque_state_marker_explicitly_allowed=marker_explicitly_allowed,
+        opaque_state_marker_change_latched=marker_change_latched,
+        opaque_state_marker_bound=marker_bound_raw,
+        state_age_sec=state_age,
+    )
+
+
+def read_chassis_health(runner: CommandRunner) -> Check:
+    result = runner.ros(
+        (
+            "ros2",
+            "topic",
+            "echo",
+            CHASSIS_DIAGNOSTICS_TOPIC,
+            "diagnostic_msgs/msg/DiagnosticArray",
+            "--once",
+            "--no-daemon",
+            "--filter",
+            f"any(s.name == '{CHASSIS_DIAGNOSTIC_NAME}' for s in m.status)",
+            "--qos-reliability",
+            "reliable",
+            "--qos-durability",
+            "volatile",
+            "--qos-depth",
+            "10",
+        )
+    )
+    if result.returncode != 0 or result.timed_out:
+        return _unknown(
+            "ros_chassis_health",
+            "bounded chassis diagnostic read received no usable sample",
+            returncode=result.returncode,
+        )
+    try:
+        documents = yaml_documents(result.stdout)
+    except yaml.YAMLError as exc:
+        return _unknown("ros_chassis_health", f"invalid diagnostic YAML: {exc}")
+    if len(documents) != 1 or not isinstance(documents[0], dict):
+        return _unknown("ros_chassis_health", "expected one diagnostic array")
+    return validate_chassis_health_document(documents[0])
+
+
 def load_landmark_binding(path: Path) -> tuple[Check, dict[str, Any] | None]:
     check_id = "semantic_landmark_binding"
     try:
@@ -783,33 +1205,55 @@ def load_landmark_binding(path: Path) -> tuple[Check, dict[str, Any] | None]:
     landmarks = document.get("landmarks")
     if not isinstance(landmarks, list):
         return _unknown(check_id, "landmarks is not an array"), None
-    target = next(
-        (
-            value
-            for value in landmarks
-            if isinstance(value, dict) and value.get("id") == "vending_machine_front"
-        ),
-        None,
-    )
-    if target is None:
-        return _check(check_id, False, "vending_machine_front landmark is absent"), None
-    if target.get("verified") is not True:
-        return _check(check_id, False, "vending machine landmark is not physically verified"), None
-    pose = target.get("pose")
-    if not isinstance(pose, dict):
-        return _unknown(check_id, "vending machine pose is absent"), None
-    try:
-        coordinates = [float(pose[key]) for key in ("x", "y", "yaw")]
-    except (KeyError, TypeError, ValueError):
-        return _unknown(check_id, "vending machine pose is incomplete"), None
-    if not all(math.isfinite(value) for value in coordinates):
-        return _check(check_id, False, "vending machine pose is non-finite"), None
+    verified_navigation: list[str] = []
+    for target in landmarks:
+        if not isinstance(target, dict):
+            continue
+        # schema v2 entries written before multi-location support omitted kind
+        # and are navigation destinations by default.
+        if target.get("kind", "navigation") != "navigation":
+            continue
+        if target.get("verified") is not True:
+            continue
+        pose = target.get("pose")
+        if not isinstance(pose, dict):
+            continue
+        try:
+            raw_coordinates = [pose[key] for key in ("x", "y", "yaw")]
+            if any(isinstance(value, bool) for value in raw_coordinates):
+                continue
+            coordinates = [float(value) for value in raw_coordinates]
+            arrival_radius = target.get("arrival_radius", 0.35)
+            if isinstance(arrival_radius, bool):
+                continue
+            arrival_radius = float(arrival_radius)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (
+            not all(math.isfinite(value) for value in coordinates)
+            or not math.isfinite(arrival_radius)
+            or not 0.05 <= arrival_radius <= 10.0
+        ):
+            continue
+        target_id = target.get("id")
+        if isinstance(target_id, str) and target_id.strip():
+            verified_navigation.append(target_id.strip())
+    if not verified_navigation:
+        return (
+            _check(
+                check_id,
+                False,
+                "no physically verified navigation landmark has a finite point pose",
+            ),
+            None,
+        )
     binding = {"map_id": map_id.strip(), "generation": generation, "mode": "localization"}
     return (
         _check(
             check_id,
             True,
-            "verified vending machine pose is bound to a measured map epoch",
+            "verified navigation landmark pose is bound to a measured map epoch",
+            verified_navigation_landmarks=sorted(verified_navigation),
             **binding,
         ),
         binding,
@@ -1034,10 +1478,13 @@ def validate_expected_environment(args: argparse.Namespace, binding: Mapping[str
 
 def collect(args: argparse.Namespace) -> dict[str, Any]:
     deploy_dir = args.deploy_dir.resolve()
+    runtime_dir = args.runtime_dir.resolve() if args.runtime_dir else deploy_dir
     runner = CommandRunner(args.command_timeout_s)
     checks: list[Check] = []
 
-    checks.append(validate_boot_state(deploy_dir / "rbnx-boot" / "state.json", deploy_dir))
+    checks.append(
+        validate_boot_state(runtime_dir / "rbnx-boot" / "state.json", runtime_dir)
+    )
 
     ports = dict(LOOPBACK_PORTS)
     ports["semantic_router"] = args.semantic_port
@@ -1062,7 +1509,11 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
 
     provider_check, _provider_payload = read_atlas_caps(runner)
     checks.append(provider_check)
-    checks.append(validate_speech_backend(deploy_dir / "rbnx-boot" / "logs" / "speech.log"))
+    checks.append(
+        validate_speech_backend(
+            runtime_dir / "rbnx-boot" / "logs" / "speech.log"
+        )
+    )
 
     landmark_check, binding = load_landmark_binding(args.landmarks_file)
     checks.append(landmark_check)
@@ -1073,6 +1524,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
             (lambda requirement=requirement: read_topic(requirement, runner) for requirement in TOPICS)
         )
     )
+    checks.append(read_chassis_health(runner))
     if binding is None:
         checks.append(_unknown("map_lifecycle_exact", "no trusted landmark binding to compare"))
     else:
@@ -1103,7 +1555,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
         ("map_to_base_link", "map", "base_link", True),
         ("base_to_lidar", "base_link", "utlidar_lidar", False),
         ("base_to_camera", "base_link", "front_camera", False),
-        ("base_to_imu", "base_link", "imu", False),
+        ("base_to_imu", "base_link", "utlidar_imu", False),
     )
     checks.extend(
         run_parallel(
@@ -1129,6 +1581,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
             "semantic_model": args.model,
             "dashboard_port": args.dashboard_port,
             "semantic_port": args.semantic_port,
+            "runtime_dir": str(runtime_dir),
         },
         "summary": {
             status: sum(1 for value in checks if value.status == status)
@@ -1162,6 +1615,11 @@ def write_report(report: Mapping[str, Any], report_dir: Path) -> Path:
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("--deploy-dir", type=Path, required=True)
+    value.add_argument(
+        "--runtime-dir",
+        type=Path,
+        help="directory containing the exact runtime manifest and rbnx-boot state",
+    )
     value.add_argument("--landmarks-file", type=Path, required=True)
     value.add_argument("--map-id", required=True)
     value.add_argument("--map-mode", required=True, choices=("mapping", "localization"))

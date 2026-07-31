@@ -144,6 +144,13 @@ def _positive_float(value: Any, name: str, default: float, maximum: float) -> fl
     return result
 
 
+def _boolean(value: Any, name: str, default: bool) -> bool:
+    result = default if value is None else value
+    if not isinstance(result, bool):
+        raise ValueError(f"{name} must be a boolean")
+    return result
+
+
 def _normalize_config(cfg: dict[str, Any]) -> dict[str, Any]:
     source_mode = str(cfg.get("source_mode") or "local")
     if source_mode not in {"local", "external"}:
@@ -194,6 +201,16 @@ def _normalize_config(cfg: dict[str, Any]) -> dict[str, Any]:
         ),
         "camera_frame": str(cfg.get("camera_frame") or "front_camera"),
         "camera_fps": _positive_float(cfg.get("camera_fps"), "camera_fps", 10.0, 30.0),
+        "camera_quality_required": _boolean(
+            cfg.get("camera_quality_required"),
+            "camera_quality_required",
+            True,
+        ),
+        "camera_required": _boolean(
+            cfg.get("camera_required"),
+            "camera_required",
+            True,
+        ),
         "camera_socket": str(socket_path),
         "sentinel_timeout": _positive_float(
             cfg.get("sentinel_timeout_s"), "sentinel_timeout_s", 30.0, 60.0
@@ -336,12 +353,16 @@ def activate():
         required = [
             (cfg["lidar_output"], "PointCloud2"),
             (cfg["imu_output"], "Imu"),
-            (cfg["camera_image"], "Image"),
-            # CameraInfo is intentionally still required as a truthful ROS
-            # companion stream, even while K[0] == 0 means uncalibrated.
-            (cfg["camera_info"], "CameraInfo"),
-            (cfg["camera_status"], "DiagnosticArray"),
         ]
+        if cfg["camera_required"]:
+            required.extend(
+                [
+                    (cfg["camera_image"], "Image"),
+                    # CameraInfo is a truthful ROS companion stream, even while
+                    # K[0] == 0 means uncalibrated.
+                    (cfg["camera_info"], "CameraInfo"),
+                ]
+            )
         deadline = time.monotonic() + timeout
         for topic, message_type in required:
             remaining = deadline - time.monotonic()
@@ -352,17 +373,27 @@ def activate():
                     f"{timeout:.1f}s activation deadline"
                 )
 
-        remaining = deadline - time.monotonic()
-        if remaining <= 0.0:
-            _stop_children()
-            return Err("camera quality gate had no time remaining in the activation deadline")
-        quality_ok, quality_detail = _camera_quality_waiter(cfg["camera_status"], remaining)
-        if not quality_ok:
-            _stop_children()
-            return Err(
-                "camera stream exists but did not pass quality_ready=true and healthy=true "
-                f"within the activation deadline: {quality_detail}"
+        if cfg["camera_required"] and cfg["camera_quality_required"]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                _stop_children()
+                return Err(
+                    "camera quality gate had no time remaining in the "
+                    "activation deadline"
+                )
+            # Do not route DiagnosticArray through Primitive.wait_for_topic():
+            # the generic Robonix ROS helper intentionally resolves only the
+            # common sensor/std/geometry/nav message packages.
+            quality_ok, quality_detail = _camera_quality_waiter(
+                cfg["camera_status"], remaining
             )
+            if not quality_ok:
+                _stop_children()
+                return Err(
+                    "camera stream exists but did not pass "
+                    "quality_ready=true and healthy=true within the "
+                    f"activation deadline: {quality_detail}"
+                )
 
         if not _declared:
             for contract, topic_key, qos in DATA_CAPABILITIES:

@@ -7,8 +7,8 @@
 [submodule "third_party/service-map-rbnx"]
 	path = third_party/service-map-rbnx
 	url = https://github.com/Origamii520/service-map-rbnx.git
-	branch = agent/add-cyclonedds-runtime
+	branch = agent/go2-dense-generation-lifecycle
 [submodule "third_party/service-navigation-rbnx"]
 	path = third_party/service-navigation-rbnx
 	url = https://github.com/Origamii520/service-navigation-rbnx.git
-	branch = agent/fix-pending-cancel
+	branch = agent/go2-runtime-safety

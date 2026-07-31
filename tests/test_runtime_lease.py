@@ -87,6 +87,83 @@ class RuntimeLeaseTest(unittest.TestCase):
             self.assertIn("format=go2-runtime-lease-v1\n", metadata)
             self.assertRegex(metadata, r"(?m)^owner_start_ticks=[0-9]+$")
 
+    def test_surviving_child_does_not_inherit_parent_only_locks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime_root = Path(temporary)
+            semantic_lock = runtime_root / "semantic-intent-router.lock"
+            child_pid_path = runtime_root / "surviving-child.pid"
+            launcher = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    r'''
+set -euo pipefail
+source "$1"
+go2_runtime_lease_acquire "$2" workstation-local
+exec {SEMANTIC_ROUTER_LOCK_FD}>"$3"
+flock --exclusive --nonblock "$SEMANTIC_ROUTER_LOCK_FD"
+(
+  go2_runtime_close_parent_only_fds
+  printf '%s\n' "$BASHPID" > "$4"
+  exec sleep 30
+) </dev/null >/dev/null 2>&1 &
+deadline=$((SECONDS + 3))
+while [[ ! -s "$4" && $SECONDS -le $deadline ]]; do
+  sleep 0.01
+done
+[[ -s "$4" ]]
+''',
+                    "bash",
+                    str(LEASE),
+                    str(runtime_root),
+                    str(semantic_lock),
+                    str(child_pid_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+            self.assertEqual(launcher.returncode, 0, launcher.stderr)
+            child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+            try:
+                os.kill(child_pid, 0)
+                for lock_path in (
+                    runtime_root / "runtime-placement.lock",
+                    semantic_lock,
+                ):
+                    probe = subprocess.run(
+                        ["flock", "--exclusive", "--nonblock", str(lock_path), "true"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=5,
+                    )
+                    self.assertEqual(
+                        probe.returncode,
+                        0,
+                        f"surviving child still holds {lock_path}: {probe.stderr}",
+                    )
+            finally:
+                try:
+                    os.kill(child_pid, 15)
+                except ProcessLookupError:
+                    pass
+
+    def test_full_launcher_closes_parent_only_fds_before_managed_execs(self) -> None:
+        start = (ROOT / "start.sh").read_text(encoding="utf-8")
+        semantic_spawn = '''(
+    go2_runtime_close_parent_only_fds
+    exec bash "$DEPLOY_DIR/packages/semantic_intent_router/scripts/start.sh"
+  ) &'''
+        boot_spawn = '''(
+  go2_runtime_close_parent_only_fds
+  exec "$RBNX_CLI" boot --no-update-check -f "$MANIFEST" "$@"
+) &'''
+        self.assertIn(semantic_spawn, start)
+        self.assertIn(boot_spawn, start)
+        self.assertEqual(start.count("go2_runtime_close_parent_only_fds"), 2)
+
     def test_malformed_active_ui_lease_does_not_skip_robonix_shutdown(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary) / "workspace"

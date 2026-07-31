@@ -3,6 +3,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$ROOT/../.." && pwd)"
+RUN_ROOT="$ROOT/rbnx-build/run"
+CURRENT_SESSION="$RUN_ROOT/workstation-nomotion-current.session"
+DISCIPLINE_LOCK="$RUN_ROOT/workstation-nomotion-stamp.lock"
+SESSION_HELPER="$ROOT/scripts/workstation_nomotion_session.sh"
+RUNTIME_DIR="$ROOT"
 
 echo "================================================================"
 echo " ROBONIX GO2 READ-ONLY FULL-STACK READINESS GATE"
@@ -15,6 +20,31 @@ if [[ -f "$ROOT/.env" ]]; then
   # shellcheck disable=SC1091
   source "$ROOT/.env"
   set +a
+fi
+
+if [[ -e "$CURRENT_SESSION" || -L "$CURRENT_SESSION" ]]; then
+  [[ -f "$SESSION_HELPER" && ! -L "$SESSION_HELPER" ]] || {
+    echo "refusing current-session lookup: trusted session helper is unavailable" >&2
+    exit 74
+  }
+  # shellcheck disable=SC1090
+  source "$SESSION_HELPER"
+  session_uid="$(id -u)"
+  go2_nomotion_validate_session_files \
+    "$RUN_ROOT" "$CURRENT_SESSION" "$session_uid" || {
+      echo "refusing invalid corrected no-motion current-session metadata" >&2
+      exit 74
+    }
+  go2_nomotion_process_identity_matches \
+    "$GO2_SESSION_PID" "$GO2_SESSION_START_TICKS" "$session_uid" || {
+      echo "refusing stale or mismatched corrected no-motion session" >&2
+      exit 74
+    }
+  go2_nomotion_process_holds_lock "$GO2_SESSION_PID" "$DISCIPLINE_LOCK" || {
+    echo "refusing corrected no-motion session without its discipline lock" >&2
+    exit 74
+  }
+  RUNTIME_DIR="$GO2_SESSION_RUN_DIR"
 fi
 
 export GO2_MAP_ID="${GO2_MAP_ID:-lab_go2}"
@@ -46,7 +76,7 @@ set +u
 source /opt/ros/humble/setup.bash
 for overlay in \
   "$ROOT/rbnx-build/unitree_ros2/install/setup.bash" \
-  "$ROOT/rbnx-boot/cache/service-map-rbnx/rbnx-build/codegen/ros2_idl/install/setup.bash"
+  "$RUNTIME_DIR/rbnx-boot/cache/service-map-rbnx/rbnx-build/codegen/ros2_idl/install/setup.bash"
 do
   if [[ -f "$overlay" ]]; then
     # shellcheck disable=SC1090
@@ -69,12 +99,13 @@ command -v rbnx >/dev/null 2>&1 || {
 }
 
 exec python3 "$ROOT/scripts/stack_readiness.py" \
+  "$@" \
   --deploy-dir "$ROOT" \
+  --runtime-dir "$RUNTIME_DIR" \
   --landmarks-file "$SEMANTIC_LANDMARKS_FILE" \
   --map-id "$GO2_MAP_ID" \
   --map-mode "$GO2_MAP_MODE" \
   --model "$VLM_MODEL" \
   --semantic-port "$SEMANTIC_INTENT_PORT" \
   --dashboard-port "$GO2_DASHBOARD_PORT" \
-  --allow-motion "$GO2_ALLOW_MOTION" \
-  "$@"
+  --allow-motion "$GO2_ALLOW_MOTION"

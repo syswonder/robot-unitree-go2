@@ -4,7 +4,21 @@ This loopback-only OpenAI-compatible endpoint gives Robonix Pilot a bounded,
 credential-free production path for saved semantic landmarks. It is not a
 perception model and never calls ROS, Nav2, Unitree APIs, or motion topics.
 
-The router loads the same landmark file as `semantic_navigation`. It emits a
+The server is **preview-only by default**. In preview mode the real
+Speech → Liaison → Pilot route may still recognize a Chinese utterance and
+match a saved semantic name, including an unverified template such as
+`自动售货机`, but the returned RTDL tree is always empty. The response carries
+the intended target and explicit blockers for the dashboard; Executor receives
+no capability leaf, so Robonix navigation is not called. `live` must be selected
+explicitly by the deployment only after the independent motion gate has passed:
+
+```bash
+SEMANTIC_INTENT_EXECUTION_MODE=preview \
+  bash packages/semantic_intent_router/scripts/start.sh
+```
+
+In explicit `live` mode, the router loads the same landmark file as
+`semantic_navigation`. It emits a
 live `semantic_navigation.semantic_navigation_navigate_landmark` RTDL leaf only
 when all of these conditions hold:
 

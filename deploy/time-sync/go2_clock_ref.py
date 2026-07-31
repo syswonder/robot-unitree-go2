@@ -44,6 +44,22 @@ EXPECTED_CORRELATION_METHOD = (
     "pcap_rtps_guid_prefix_and_data_writer_entity_correlation"
 )
 EXPECTED_CORRELATION_CONCLUSION = "single_source_proven_by_rtps_data_writer"
+APPROVAL_SCHEMA_VERSION = 3
+MINIMUM_STABILITY_DURATION_NS = 7_200_000_000_000
+MINIMUM_COLD_BOOT_TRIALS = 3
+POST_BOOTSTRAP_POLICY = {
+    "reference_topic": "/sportmodestate",
+    "minimum_continuous_duration_ns": 300_000_000_000,
+    "maximum_absolute_offset_ns_exclusive": 50_000_000,
+    "maximum_absolute_drift_ppm_exclusive": 100.0,
+    "maximum_observation_duration_ns": 900_000_000_000,
+    "audit_file": "post-bootstrap-quality.json",
+    "samples_file": "post-bootstrap-quality-samples.jsonl",
+    "require_unsafe_latched_false": True,
+    "require_current_writer_authorized": True,
+    "require_feed_count_advancing": True,
+    "require_chronyd_go2_selected": True,
+}
 
 
 class Timeval(ctypes.Structure):
@@ -98,10 +114,17 @@ def validate_enable_file(path: Path, expected_owner_uid: int = 0) -> None:
 
 
 def validate_approval_payload(payload: Any) -> dict[str, dict[str, Any]]:
-    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != APPROVAL_SCHEMA_VERSION
+    ):
         raise ValueError(
-            "approval must be a recomputed schema_version=2 JSON object"
+            "approval must be a recomputed schema_version=3 JSON object"
         )
+    if payload.get("activation_authorized") is not False:
+        raise ValueError("approval payload must remain non-authorizing")
+    if payload.get("post_bootstrap_quality_gate") != POST_BOOTSTRAP_POLICY:
+        raise ValueError("approval post-bootstrap quality policy is not exact")
     evidence = payload.get("evidence_bundle")
     if not isinstance(evidence, dict):
         raise ValueError("approval is missing evidence_bundle")
@@ -166,6 +189,53 @@ def validate_approval_payload(payload: Any) -> dict[str, dict[str, Any]]:
             "correlation_sha256": digest,
             "pcap_sha256": pcap_digest,
         }
+    if "/sportmodestate" not in result:
+        raise ValueError("approval requires the primary /sportmodestate writer")
+    stability = payload.get("pre_bootstrap_stability")
+    if not isinstance(stability, dict):
+        raise ValueError("approval requires verified pre-bootstrap stability")
+    if (
+        stability.get("minimum_duration_ns") != MINIMUM_STABILITY_DURATION_NS
+        or not isinstance(stability.get("observed_duration_ns"), int)
+        or stability["observed_duration_ns"] < MINIMUM_STABILITY_DURATION_NS
+    ):
+        raise ValueError("approval lacks a verified two-hour stability run")
+    if _compact_gid(str(stability.get("writer_gid", ""))) != result[
+        "/sportmodestate"
+    ]["gid"]:
+        raise ValueError("stability writer does not match the current primary writer")
+    trials = payload.get("cold_boot_identity_trials")
+    if not isinstance(trials, list) or len(trials) < MINIMUM_COLD_BOOT_TRIALS:
+        raise ValueError("approval requires three verified cold-boot trials")
+    trial_ids: set[str] = set()
+    boot_ids: set[str] = set()
+    writer_gids: set[bytes] = set()
+    current_count = 0
+    for trial in trials:
+        if not isinstance(trial, dict):
+            raise ValueError("cold-boot trial must be an object")
+        trial_id = trial.get("trial_id")
+        boot_id = trial.get("boot_id")
+        gid = _compact_gid(str(trial.get("writer_gid", "")))
+        if (
+            not isinstance(trial_id, str)
+            or not trial_id
+            or trial_id in trial_ids
+            or not isinstance(boot_id, str)
+            or not boot_id
+            or boot_id in boot_ids
+            or gid in writer_gids
+        ):
+            raise ValueError("cold-boot identities must be complete and distinct")
+        trial_ids.add(trial_id)
+        boot_ids.add(boot_id)
+        writer_gids.add(gid)
+        if trial.get("current_session") is True:
+            current_count += 1
+            if gid != result["/sportmodestate"]["gid"]:
+                raise ValueError("current cold-boot writer does not match approval")
+    if current_count != 1:
+        raise ValueError("exactly one cold-boot trial must be current")
     return result
 
 

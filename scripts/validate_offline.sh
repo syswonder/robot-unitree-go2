@@ -18,11 +18,12 @@ import xml.etree.ElementTree as ET
 import yaml
 
 root = Path(os.environ["DEPLOY_DIR"])
+excluded_yaml_trees = {"rbnx-build", "third_party", "logs"}
 for path in sorted(root.rglob("*.yaml")):
-    if "rbnx-build" not in path.parts and "third_party" not in path.parts:
+    if excluded_yaml_trees.isdisjoint(path.parts):
         yaml.safe_load(path.read_text(encoding="utf-8"))
 for path in sorted(root.rglob("*.yml")):
-    if "rbnx-build" not in path.parts and "third_party" not in path.parts:
+    if excluded_yaml_trees.isdisjoint(path.parts):
         yaml.safe_load(path.read_text(encoding="utf-8"))
 for path in (root / "config" / "navigate.xml", root / "packages" / "go2_description" / "urdf" / "go2_robonix.urdf"):
     ET.parse(path)
@@ -58,7 +59,16 @@ g++ -std=c++17 -Wall -Wextra -Wpedantic -Werror \
   -o "$TEMP_DIR/protocol_guard_test"
 "$TEMP_DIR/protocol_guard_test"
 
+g++ -std=c++17 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror \
+  -I"$DEPLOY_DIR/packages/go2_motion_state_relay/include" \
+  "$DEPLOY_DIR/packages/go2_motion_state_relay/tests/gid_guard_test.cpp" \
+  -o "$TEMP_DIR/gid_guard_test"
+"$TEMP_DIR/gid_guard_test"
+
 bash "$DEPLOY_DIR/packages/go2_sensors/tests/run_offline_tests.sh"
+bash "$DEPLOY_DIR/packages/go2_d435i/tests/run_offline_tests.sh"
+python3 -m unittest discover \
+  -s "$DEPLOY_DIR/deploy/jetson-d435i-readonly" -p 'test_*.py'
 PYTHONPATH="$DEPLOY_DIR/packages/go2_dashboard${PYTHONPATH:+:$PYTHONPATH}" \
   python3 -m unittest discover \
     -s "$DEPLOY_DIR/packages/go2_dashboard/tests" -p 'test_*.py'

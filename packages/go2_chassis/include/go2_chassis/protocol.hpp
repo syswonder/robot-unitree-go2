@@ -21,6 +21,7 @@ enum class CommandOp : std::uint8_t {
   kMove = 3,
   kStop = 4,
   kPing = 5,
+  kRestoreClassicWalk = 6,
 };
 
 enum class ReplyCode : std::int32_t {
@@ -109,6 +110,7 @@ inline bool IsKnownOperation(std::uint8_t value) {
     case CommandOp::kMove:
     case CommandOp::kStop:
     case CommandOp::kPing:
+    case CommandOp::kRestoreClassicWalk:
       return true;
   }
   return false;

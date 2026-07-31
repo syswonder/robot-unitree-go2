@@ -18,6 +18,7 @@ python3 -m py_compile \
   "${repository_root}/deploy/time-sync/go2_time_core.py" \
   "${repository_root}/deploy/time-sync/evidence_bundle.py" \
   "${repository_root}/deploy/time-sync/go2_clock_ref.py" \
+  "${repository_root}/deploy/time-sync/post_bootstrap_quality_gate.py" \
   "${repository_root}/scripts/probe_go2_time_readonly.py" \
   "${repository_root}/scripts/prepare_go2_time_approval.py" \
   "${repository_root}/scripts/correlate_rtps_writer_locator.py" \

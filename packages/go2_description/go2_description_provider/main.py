@@ -12,7 +12,13 @@ import robonix_contracts_pb2_grpc as contracts_grpc
 import soma_pb2
 from robonix_api import Err, Ok, Primitive
 
-from .runtime import require_pinned_urdf, validate_urdf, write_robot_state_publisher_params
+from .runtime import (
+    fixed_joint_transforms,
+    require_pinned_urdf,
+    validate_urdf,
+    wait_for_static_transforms,
+    write_robot_state_publisher_params,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +79,7 @@ def initialize(config: dict):
         robot_id, urdf_xml = _fetch_soma_urdf()
         digest = require_pinned_urdf(urdf_xml, PINNED_URDF)
         root_link, links, joints = validate_urdf(urdf_xml)
+        expected_static = fixed_joint_transforms(urdf_xml)
         write_robot_state_publisher_params(PARAMETERS, urdf_xml)
         _child = description.spawn(
             [
@@ -92,10 +99,17 @@ def initialize(config: dict):
             raise RuntimeError(
                 f"robot_state_publisher exited during startup with code {_child.returncode}"
             )
-        if not description.wait_for_topic(
-            "/tf_static", "tf2_msgs/msg/TFMessage", 10.0
-        ):
-            raise RuntimeError("robot_state_publisher did not publish /tf_static")
+        tf_sentinel = wait_for_static_transforms(expected_static, 10.0)
+        if not tf_sentinel.ready:
+            missing = ", ".join(
+                f"{parent}->{child}"
+                for parent, child in sorted(tf_sentinel.missing)[:5]
+            )
+            raise RuntimeError(
+                "robot_state_publisher did not latch the complete /tf_static tree "
+                f"(expected={len(expected_static)}, "
+                f"observed={len(tf_sentinel.observed)}, missing={missing})"
+            )
         print(
             f"[go2_description] robot={robot_id} root={root_link} "
             f"links={links} joints={joints} sha256={digest}"

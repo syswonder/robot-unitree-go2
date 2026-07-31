@@ -172,10 +172,18 @@ def _rtps_data_writer_ids(payload: bytes) -> list[bytes]:
         octets_to_next = int.from_bytes(payload[offset + 2 : offset + 4], byte_order)
         body_start = offset + 4
         body_end = len(payload) if octets_to_next == 0 else body_start + octets_to_next
+        is_data = submessage_id in (RTPS_DATA, RTPS_DATA_FRAG)
+        declared_writer_present = octets_to_next == 0 or octets_to_next >= 12
+        captured_writer_present = len(payload) >= body_start + 12
+        if is_data and declared_writer_present and captured_writer_present:
+            writers.append(payload[body_start + 8 : body_start + 12])
+        # A classic PCAP snaplen can truncate a valid UDP/RTPS datagram after
+        # the fixed DATA/DATA_FRAG fields.  The writerEntityId above is still
+        # usable when both the declared and captured body cover it, but no
+        # later submessage boundary can be trusted once the current body is
+        # incomplete.
         if body_end > len(payload):
             break
-        if submessage_id in (RTPS_DATA, RTPS_DATA_FRAG) and body_end >= body_start + 12:
-            writers.append(payload[body_start + 8 : body_start + 12])
         if octets_to_next == 0:
             break
         offset = body_end

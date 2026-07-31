@@ -60,7 +60,11 @@ is mounted into the container.
 ## Evidence approval
 
 Keep the original PCAP, topic-info, correlation and approval as direct files
-in one same-session bundle directory.  Create the inactive schema-v2 approval:
+in one same-session bundle directory.  Create the inactive schema-v3 approval
+only after the directory also contains the completed two-hour probe and three
+physically observed cold-boot trials.  A trial is
+`TRIAL_ID,CURRENT,ATTESTATION,BOOT_ID,PCAP,TOPIC_INFO,CORRELATION`; exactly one
+must use `CURRENT=true`:
 
 ```bash
 python3 scripts/prepare_go2_time_approval.py \
@@ -69,6 +73,14 @@ python3 scripts/prepare_go2_time_approval.py \
   /sportmodestate=logs/go2-readonly/SESSION/sport_primary.topic-info.txt \
   --topic-correlation \
   /sportmodestate=logs/go2-readonly/SESSION/sport_primary.correlation.json \
+  --stability-metadata logs/go2-readonly/SESSION/stability-metadata.json \
+  --stability-summary logs/go2-readonly/SESSION/stability-summary.json \
+  --cold-boot-trial \
+  cold-boot-1,false,physical-cold-boot-observed-and-read-only,logs/go2-readonly/SESSION/boot-1.id,logs/go2-readonly/SESSION/boot-1.pcap,logs/go2-readonly/SESSION/boot-1.topic-info.txt,logs/go2-readonly/SESSION/boot-1.correlation.json \
+  --cold-boot-trial \
+  cold-boot-2,false,physical-cold-boot-observed-and-read-only,logs/go2-readonly/SESSION/boot-2.id,logs/go2-readonly/SESSION/boot-2.pcap,logs/go2-readonly/SESSION/boot-2.topic-info.txt,logs/go2-readonly/SESSION/boot-2.correlation.json \
+  --cold-boot-trial \
+  cold-boot-current,true,physical-cold-boot-observed-and-read-only,logs/go2-readonly/SESSION/boot-current.id,logs/go2-readonly/SESSION/go2-rtps.pcap,logs/go2-readonly/SESSION/sport_primary.topic-info.txt,logs/go2-readonly/SESSION/sport_primary.correlation.json \
   --output logs/go2-readonly/SESSION/go2-clock-ref-approval.json
 ```
 

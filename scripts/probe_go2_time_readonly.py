@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Bounded, no-adjust timestamp probe for the physical Go2 data plane.
 
-The process creates ROS subscriptions only.  It neither publishes ROS data nor
-opens a Unitree client.  Source headers are compared with clocks sampled at the
-callback boundary and are written unchanged to private evidence files.
+The process creates exactly five low-level ROS subscriptions.  It deliberately
+avoids the high-level rclpy Node because that class also creates parameter ROS
+endpoints.  It neither publishes ROS data nor opens a Unitree client.  Source
+headers are compared with clocks sampled at the receive boundary and are
+written unchanged to private evidence files.
 """
 
 from __future__ import annotations
@@ -36,7 +38,15 @@ DEFAULT_TOPICS = {
     "sport_fallback": "/lf/sportmodestate",
     "mid360_cloud": "/utlidar/cloud",
     "mid360_imu": "/utlidar/imu",
+    "mid360_odom": "/utlidar/robot_odom",
 }
+QUALIFICATION_STREAMS = (
+    "sport_primary",
+    "mid360_imu",
+    "mid360_cloud",
+    "mid360_odom",
+)
+WITNESS_STREAMS = ("sport_fallback",)
 
 
 class TerminationRequest:
@@ -100,7 +110,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--duration-seconds",
         type=lambda value: _bounded_int(value, 1, 86_400, "duration-seconds"),
-        default=60,
+        default=75,
     )
     parser.add_argument(
         "--max-samples",
@@ -118,6 +128,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fallback-topic", type=_topic, default=DEFAULT_TOPICS["sport_fallback"])
     parser.add_argument("--cloud-topic", type=_topic, default=DEFAULT_TOPICS["mid360_cloud"])
     parser.add_argument("--imu-topic", type=_topic, default=DEFAULT_TOPICS["mid360_imu"])
+    parser.add_argument("--odom-topic", type=_topic, default=DEFAULT_TOPICS["mid360_odom"])
     return parser
 
 
@@ -154,14 +165,18 @@ def run_probe(arguments: argparse.Namespace) -> int:
     # ROS imports are deliberately delayed.  Pure timestamp tests therefore do
     # not initialize DDS and can run on a machine with no ROS installation.
     try:
-        import rclpy
-        from rclpy.node import Node
+        from rclpy.context import Context
+        from rclpy.impl.implementation_singleton import (
+            rclpy_implementation as _rclpy,
+        )
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
             QoSProfile,
             ReliabilityPolicy,
         )
+        from rclpy.type_support import check_is_valid_msg_type
+        from nav_msgs.msg import Odometry
         from sensor_msgs.msg import Imu, PointCloud2
         from unitree_go.msg import SportModeState
     except ImportError as error:
@@ -176,6 +191,7 @@ def run_probe(arguments: argparse.Namespace) -> int:
         "sport_fallback": arguments.fallback_topic,
         "mid360_cloud": arguments.cloud_topic,
         "mid360_imu": arguments.imu_topic,
+        "mid360_odom": arguments.odom_topic,
     }
     trackers = {
         name: StreamTracker(
@@ -203,6 +219,8 @@ def run_probe(arguments: argparse.Namespace) -> int:
         "retained_offsets_per_stream": arguments.retained_offsets_per_stream,
         "topics": topics,
         "stream_order": list(topics),
+        "qualification_streams": list(QUALIFICATION_STREAMS),
+        "witness_streams": list(WITNESS_STREAMS),
         "interpretation": (
             "source_minus_receipt is measurement evidence only; it is never "
             "used to replace a ROS header timestamp"
@@ -214,23 +232,119 @@ def run_probe(arguments: argparse.Namespace) -> int:
     sample_stream = sample_path.open("x", encoding="utf-8", buffering=1)
     os.chmod(sample_path, 0o600)
 
-    class ReadOnlyTimeProbe(Node):
-        def __init__(self) -> None:
-            super().__init__("go2_time_probe_readonly")
+    topic_specs: tuple[
+        tuple[str, str, Any, Callable[[Any], tuple[int, int]]], ...
+    ] = (
+        (
+            "sport_primary",
+            topics["sport_primary"],
+            SportModeState,
+            _stamp_from_sport,
+        ),
+        (
+            "sport_fallback",
+            topics["sport_fallback"],
+            SportModeState,
+            _stamp_from_sport,
+        ),
+        (
+            "mid360_cloud",
+            topics["mid360_cloud"],
+            PointCloud2,
+            _stamp_from_header,
+        ),
+        ("mid360_imu", topics["mid360_imu"], Imu, _stamp_from_header),
+        ("mid360_odom", topics["mid360_odom"], Odometry, _stamp_from_header),
+    )
+
+    stop_request = TerminationRequest()
+    previous_sigterm_handler = signal.signal(signal.SIGTERM, stop_request.handler)
+
+    def execute_probe() -> int:
+        nonlocal total_samples
+        context = None
+        context_initialized = False
+        node_handle = None
+        wait_set = None
+        subscriptions: list[Any] = []
+        subscription_specs: dict[
+            int, tuple[str, Any, Callable[[Any], tuple[int, int]]]
+        ] = {}
+        # Duration is measured from immediately before ROS initialization to
+        # the monotonic deadline.  Summary elapsed time keeps the earlier
+        # pre-metadata clock sample and is therefore intentionally a little
+        # longer; both definitions are explicit evidence, not wall-clock
+        # guesses.
+        deadline_ns = time.monotonic_ns() + arguments.duration_seconds * 1_000_000_000
+        exit_reason = "unknown"
+        cleanup_errors: list[str] = []
+        try:
+            context = Context()
+            context.init(args=[], initialize_logging=False)
+            context_initialized = True
+            for _stream_name, _topic_name, message_type, _stamp_getter in topic_specs:
+                check_is_valid_msg_type(message_type)
+
             qos = QoSProfile(
                 history=HistoryPolicy.KEEP_LAST,
                 depth=10,
                 reliability=ReliabilityPolicy.BEST_EFFORT,
                 durability=DurabilityPolicy.VOLATILE,
             )
+            # The high-level Node unconditionally owns parameter endpoints on
+            # Humble.  Construct only one low-level node, five subscriptions,
+            # and one wait set; disable rosout and global arguments.
+            with context.handle:
+                node_handle = _rclpy.Node(
+                    "go2_time_probe_readonly",
+                    "",
+                    context.handle,
+                    None,
+                    False,
+                    False,
+                )
+                wait_set = _rclpy.WaitSet(5, 0, 0, 0, 0, 0, context.handle)
+            with node_handle:
+                for stream_name, topic_name, message_type, stamp_getter in topic_specs:
+                    subscription = _rclpy.Subscription(
+                        node_handle,
+                        message_type,
+                        topic_name,
+                        qos.get_c_qos_profile(),
+                    )
+                    subscriptions.append(subscription)
+                    subscription_specs[subscription.pointer] = (
+                        stream_name,
+                        message_type,
+                        stamp_getter,
+                    )
 
-            def callback_for(
-                stream_name: str, stamp_getter: Callable[[Any], tuple[int, int]]
-            ) -> Callable[[Any], None]:
-                def callback(message: Any) -> None:
-                    nonlocal total_samples
+            while context.ok() and time.monotonic_ns() < deadline_ns:
+                if stop_request.requested:
+                    break
+                if total_samples >= arguments.max_samples:
+                    break
+                remaining_ns = max(0, deadline_ns - time.monotonic_ns())
+                wait_set.clear_entities()
+                for subscription in subscriptions:
+                    wait_set.add_subscription(subscription)
+                wait_set.wait(min(100_000_000, remaining_ns))
+                ready = set(wait_set.get_ready_entities("subscription"))
+                for subscription in subscriptions:
+                    if stop_request.requested:
+                        break
+                    if total_samples >= arguments.max_samples:
+                        break
+                    if subscription.pointer not in ready:
+                        continue
+                    stream_name, message_type, stamp_getter = subscription_specs[
+                        subscription.pointer
+                    ]
+                    message_info = subscription.take_message(message_type, False)
+                    if message_info is None:
+                        continue
                     receipt_realtime, receipt_monotonic, clock_span = read_clock_pair()
-                    seconds, nanoseconds = stamp_getter(message)
+                    seconds, nanoseconds = stamp_getter(message_info[0])
                     observation: Observation = trackers[stream_name].observe(
                         seconds,
                         nanoseconds,
@@ -248,87 +362,47 @@ def run_probe(arguments: argparse.Namespace) -> int:
                         + "\n"
                     )
                     total_samples += 1
-
-                return callback
-
-            # Subscriptions are retained explicitly.  This node intentionally
-            # has no publisher, service, action client, or Unitree SDK object.
-            self._subscriptions = [
-                self.create_subscription(
-                    SportModeState,
-                    topics["sport_primary"],
-                    callback_for("sport_primary", _stamp_from_sport),
-                    qos,
-                ),
-                self.create_subscription(
-                    SportModeState,
-                    topics["sport_fallback"],
-                    callback_for("sport_fallback", _stamp_from_sport),
-                    qos,
-                ),
-                self.create_subscription(
-                    PointCloud2,
-                    topics["mid360_cloud"],
-                    callback_for("mid360_cloud", _stamp_from_header),
-                    qos,
-                ),
-                self.create_subscription(
-                    Imu,
-                    topics["mid360_imu"],
-                    callback_for("mid360_imu", _stamp_from_header),
-                    qos,
-                ),
-            ]
-
-    stop_request = TerminationRequest()
-    previous_sigterm_handler = signal.signal(signal.SIGTERM, stop_request.handler)
-
-    def execute_probe() -> int:
-        node = None
-        rclpy_initialized = False
-        # Duration is measured from immediately before ROS initialization to
-        # the monotonic deadline.  Summary elapsed time keeps the earlier
-        # pre-metadata clock sample and is therefore intentionally a little
-        # longer; both definitions are explicit evidence, not wall-clock
-        # guesses.
-        deadline_ns = time.monotonic_ns() + arguments.duration_seconds * 1_000_000_000
-        exit_reason = "unknown"
-        cleanup_errors: list[str] = []
-        try:
-            rclpy.init(args=None)
-            rclpy_initialized = True
-            node = ReadOnlyTimeProbe()
-            while rclpy.ok() and time.monotonic_ns() < deadline_ns:
-                if stop_request.requested:
-                    break
-                if total_samples >= arguments.max_samples:
-                    break
-                rclpy.spin_once(node, timeout_sec=0.1)
             if stop_request.requested:
                 exit_reason = stop_request.exit_reason or "signal"
             elif total_samples >= arguments.max_samples:
                 exit_reason = "max_samples_reached"
             elif time.monotonic_ns() >= deadline_ns:
                 exit_reason = "duration_elapsed"
-            elif not rclpy.ok():
+            elif not context.ok():
                 exit_reason = "rclpy_shutdown"
         except KeyboardInterrupt:
             stop_request.handler(signal.SIGINT, None)
             exit_reason = stop_request.exit_reason or "signal_sigint"
         finally:
-            if node is not None:
+            if wait_set is not None:
                 try:
-                    node.destroy_node()
+                    wait_set.clear_entities()
+                    wait_set.destroy_when_not_in_use()
                 except Exception as error:  # pragma: no cover - ROS runtime only
                     cleanup_errors.append(
-                        f"destroy_node: {type(error).__name__}: {error}"
+                        f"wait_set: {type(error).__name__}: {error}"
                     )
-            if rclpy_initialized:
+            for subscription in reversed(subscriptions):
                 try:
-                    rclpy.shutdown()
+                    subscription.destroy_when_not_in_use()
                 except Exception as error:  # pragma: no cover - ROS runtime only
                     cleanup_errors.append(
-                        f"rclpy_shutdown: {type(error).__name__}: {error}"
+                        f"subscription: {type(error).__name__}: {error}"
+                    )
+            if node_handle is not None:
+                try:
+                    node_handle.destroy_when_not_in_use()
+                except Exception as error:  # pragma: no cover - ROS runtime only
+                    cleanup_errors.append(
+                        f"node: {type(error).__name__}: {error}"
+                    )
+            if context is not None and context_initialized:
+                try:
+                    context.try_shutdown()
+                    context.destroy()
+                except Exception as error:  # pragma: no cover - ROS runtime only
+                    cleanup_errors.append(
+                        f"context: {type(error).__name__}: {error}"
                     )
             try:
                 sample_stream.flush()

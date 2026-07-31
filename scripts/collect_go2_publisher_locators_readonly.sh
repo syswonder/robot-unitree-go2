@@ -12,6 +12,7 @@ OUTPUT_DIR="${2:-${PROJECT_ROOT}/logs/go2-readonly/${STAMP}-publisher-locators}"
 CAPTURE_SECONDS="${3:-${GO2_LOCATOR_CAPTURE_SECONDS:-20}}"
 CAPTURE_MODE="${GO2_LOCATOR_PACKET_CAPTURE:-NO}"
 PCAP_PACKET_LIMIT="${GO2_LOCATOR_PACKET_LIMIT:-20000}"
+TCPDUMP_PRIVILEGE="${GO2_LOCATOR_TCPDUMP_PRIVILEGE:-DIRECT}"
 
 cat <<'BANNER'
 =============================================================================
@@ -39,6 +40,14 @@ if (( CAPTURE_SECONDS > 120 || PCAP_PACKET_LIMIT > 100000 )); then
   printf '拒绝无界抓包：capture-seconds<=120，packet-limit<=100000。\n' >&2
   exit 2
 fi
+case "${TCPDUMP_PRIVILEGE}" in
+  DIRECT|SUDO_NONINTERACTIVE|PKEXEC)
+    ;;
+  *)
+    printf 'GO2_LOCATOR_TCPDUMP_PRIVILEGE 必须是 DIRECT、SUDO_NONINTERACTIVE 或 PKEXEC。\n' >&2
+    exit 2
+    ;;
+esac
 
 OUTPUT_DIR="$(realpath -m -- "${OUTPUT_DIR}")"
 case "${OUTPUT_DIR}" in
@@ -57,14 +66,16 @@ mkdir -m 0700 -p -- "${OUTPUT_DIR}"
 topics=(
   /sportmodestate
   /lf/sportmodestate
-  /utlidar/cloud
   /utlidar/imu
+  /utlidar/robot_odom
+  /utlidar/cloud
 )
 labels=(
   sport_primary
   sport_fallback
-  mid360_cloud
   mid360_imu
+  mid360_odom
+  mid360_cloud
 )
 
 {
@@ -125,6 +136,34 @@ command -v tcpdump >/dev/null 2>&1 || {
   printf '缺少 tcpdump；未抓包，且不会自动安装。\n' >&2
   exit 127
 }
+declare -a tcpdump_command=(tcpdump)
+if [[ "${TCPDUMP_PRIVILEGE}" == SUDO_NONINTERACTIVE ]]; then
+  if (( EUID == 0 )); then
+    printf '拒绝以 root 运行整个 collector；请以普通用户运行，并仅授权 tcpdump。\n' >&2
+    exit 2
+  fi
+  command -v sudo >/dev/null 2>&1 || {
+    printf '缺少 sudo；未抓包。\n' >&2
+    exit 127
+  }
+  # Authentication must be completed explicitly before this script starts.
+  # -n prevents a background password prompt from racing the bounded ROS
+  # subscriptions; only tcpdump receives privilege and it immediately drops
+  # packet-file ownership back to the invoking user via -Z below.
+  tcpdump_command=(sudo -n -- tcpdump)
+elif [[ "${TCPDUMP_PRIVILEGE}" == PKEXEC ]]; then
+  if (( EUID == 0 )); then
+    printf '拒绝以 root 运行整个 collector；请以普通用户运行，并仅授权 tcpdump。\n' >&2
+    exit 2
+  fi
+  command -v pkexec >/dev/null 2>&1 || {
+    printf '缺少 pkexec；未抓包。\n' >&2
+    exit 127
+  }
+  # The desktop polkit agent owns authentication. Only tcpdump is elevated;
+  # -Z below drops packet-file ownership and capture privileges to this user.
+  tcpdump_command=(pkexec --user root tcpdump)
+fi
 
 interface_cidr="$({ ip -o -4 addr show dev "${INTERFACE}" || true; } \
   | awk '$4 == "192.168.123.99/24" || $4 == "192.168.123.18/24" {print $4}')"
@@ -144,7 +183,7 @@ printf '开始 %s 秒、最多 %s 包的被动抓包；不会发送探测包。\
   "${CAPTURE_SECONDS}" "${PCAP_PACKET_LIMIT}"
 set +e
 timeout --signal=INT --kill-after=3s "${CAPTURE_SECONDS}s" \
-  tcpdump -i "${INTERFACE}" -nn -s 0 -c "${PCAP_PACKET_LIMIT}" \
+  "${tcpdump_command[@]}" -i "${INTERFACE}" -nn -s 0 -c "${PCAP_PACKET_LIMIT}" \
     -Z "$(id -un)" -w "${pcap_path}" \
     'udp and net 192.168.123.0/24' \
     >"${OUTPUT_DIR}/tcpdump.stdout.txt" \
@@ -159,6 +198,39 @@ cleanup_capture() {
   fi
 }
 trap cleanup_capture INT TERM EXIT
+
+# Do not create the five subscriptions until tcpdump has opened the output
+# file.  This closes the startup race that would otherwise lose the first
+# (and sometimes only) DATA sample for a low-rate topic.
+capture_ready=false
+for _ in {1..300}; do
+  # Some tcpdump/libpcap combinations buffer the global header until the
+  # capture closes, so a successfully opened savefile can remain size zero
+  # while packets are already being collected. Existence plus a live capture
+  # process proves the savefile was opened without depending on flush timing.
+  if kill -0 "${capture_pid}" 2>/dev/null && {
+    [[ -e "${pcap_path}" ]] \
+      || grep -Fq 'tcpdump: listening on ' \
+        "${OUTPUT_DIR}/tcpdump.stderr.txt" 2>/dev/null
+  }; then
+    capture_ready=true
+    break
+  fi
+  if ! kill -0 "${capture_pid}" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+if [[ "${capture_ready}" != true ]]; then
+  set +e
+  wait "${capture_pid}"
+  capture_status=$?
+  set -e
+  trap - INT TERM EXIT
+  printf 'tcpdump 未能进入就绪状态（status=%d）；未创建 ROS 订阅。\n' \
+    "${capture_status}" >&2
+  exit 1
+fi
 
 # Each echo creates only a short-lived subscription and is independently
 # bounded.  Samples help ensure matching DATA packets occur during the PCAP.

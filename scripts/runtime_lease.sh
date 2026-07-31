@@ -62,8 +62,10 @@ go2_runtime_lease_acquire() {
   lease_lock_path="${runtime_root}/runtime-placement.lock"
   lease_metadata_path="${runtime_root}/runtime-placement.lease"
 
-  # This descriptor intentionally remains open across exec.  flock is released
-  # by the kernel when the final inherited descriptor closes.
+  # The launcher owns this descriptor for its process lifetime.  Managed
+  # children that are not lease owners must call
+  # go2_runtime_close_parent_only_fds in a subshell before exec so a surviving
+  # child cannot extend the launcher's lease after the launcher exits.
   exec {GO2_RUNTIME_LEASE_FD}>"$lease_lock_path"
   if ! flock --exclusive --nonblock "$GO2_RUNTIME_LEASE_FD"; then
     echo "another Go2 runtime placement already holds ${lease_lock_path}" >&2
@@ -76,4 +78,27 @@ go2_runtime_lease_acquire() {
     "$lease_metadata_path" "$profile" "$GO2_RUNTIME_LEASE_TOKEN" "$$" \
     "$lease_owner_start_ticks"
   echo "Atomic runtime placement lease acquired: ${profile}"
+}
+
+go2_runtime_close_parent_only_fds() {
+  local runtime_fd="${GO2_RUNTIME_LEASE_FD:-}"
+  local semantic_fd="${SEMANTIC_ROUTER_LOCK_FD:-}"
+  local fd
+
+  for fd in "$runtime_fd" "$semantic_fd"; do
+    [[ -z "$fd" || "$fd" =~ ^[0-9]+$ ]] || {
+      echo "refusing to spawn with an invalid parent-only lock descriptor" >&2
+      return 2
+    }
+  done
+
+  if [[ -n "$runtime_fd" ]]; then
+    exec {GO2_RUNTIME_LEASE_FD}>&- || return 2
+  fi
+  if [[ -n "$semantic_fd" ]]; then
+    exec {SEMANTIC_ROUTER_LOCK_FD}>&- || return 2
+  fi
+
+  unset GO2_RUNTIME_LEASE_FD GO2_RUNTIME_LEASE_TOKEN
+  unset SEMANTIC_ROUTER_LOCK_FD
 }

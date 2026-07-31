@@ -765,18 +765,25 @@
   <!-- unitree_ros2 publishes the onboard lidar cloud in utlidar_lidar. -->
   <link name="utlidar_lidar" />
   <joint name="radar_to_utlidar_lidar" type="fixed">
-    <origin xyz="0 0 0" rpy="0 0 0" />
+    <!--
+      Robot-specific frame calibration.  The upstream radar frame is kept
+      unchanged; this alias was measured by rigidly matching 22,801 points
+      from same-stamp /utlidar/cloud and /utlidar/cloud_base samples.
+    -->
+    <origin
+      xyz="-0.005152655 0 -0.047108077"
+      rpy="-0.001508482 -0.000981520 -2.146758680" />
     <parent link="radar" />
     <child link="utlidar_lidar" />
   </joint>
   <!--
-    Livox Mid-360 User Manual v1.2: the embedded IMU axes are aligned
-    with the point-cloud coordinates and its chip origin is
-    (11.0 mm, 23.29 mm, -44.12 mm) in that frame.
+    Unitree UniLiDAR L1/L2 SDK: the embedded IMU axes are aligned with
+    the point-cloud coordinates and its origin is
+    (-7.698 mm, -14.655 mm, 6.67 mm) in that frame.
   -->
   <link name="utlidar_imu" />
   <joint name="utlidar_lidar_to_utlidar_imu" type="fixed">
-    <origin xyz="0.011 0.02329 -0.04412" rpy="0 0 0" />
+    <origin xyz="-0.007698 -0.014655 0.00667" rpy="0 0 0" />
     <parent link="utlidar_lidar" />
     <child link="utlidar_imu" />
   </joint>

@@ -161,7 +161,6 @@ expected_streams = {
     ("/scanner/imu", "Imu"),
     ("/camera/color/image_raw", "Image"),
     ("/camera/color/camera_info", "CameraInfo"),
-    ("/go2/sensors/status", "DiagnosticArray"),
 }
 if waited_streams != expected_streams:
     raise SystemExit(f"unexpected activation sentinels: {sorted(waited_streams)}")
@@ -188,6 +187,52 @@ provider.spawned.clear()
 provider.waited.clear()
 provider.declared.clear()
 quality_waits.clear()
+
+# Localization/Nav2 may keep the RGB processes and capability available while
+# treating a temporarily absent camera stream as non-blocking.  Lidar and IMU
+# remain activation sentinels and the camera capability is still declared.
+module._camera_quality_waiter = lambda topic, timeout: (_ for _ in ()).throw(
+    AssertionError("optional camera quality waiter must not run")
+)
+optional_quality_config = dict(
+    config,
+    camera_required=False,
+    camera_quality_required=False,
+)
+module.socket.if_nametoindex = lambda interface: 1 if interface == "offline0" else 0
+try:
+    optional_quality_init = module.initialize(optional_quality_config)
+finally:
+    module.socket.if_nametoindex = original_if_nametoindex
+if optional_quality_init != ("ok", None):
+    raise SystemExit(
+        f"optional camera quality initialization failed: {optional_quality_init!r}"
+    )
+if module.activate() != ("ok", None):
+    raise SystemExit("optional camera quality profile did not activate")
+optional_waited_streams = {
+    (topic, message_type) for topic, message_type, _ in provider.waited
+}
+if optional_waited_streams != {
+    ("/scanner/cloud", "PointCloud2"),
+    ("/scanner/imu", "Imu"),
+}:
+    raise SystemExit(
+        f"optional camera profile retained camera sentinels: "
+        f"{sorted(optional_waited_streams)}"
+    )
+if set(provider.declared) != expected_declarations:
+    raise SystemExit("optional camera profile did not declare all capabilities")
+module._config = {}
+module._children = []
+module._declared = False
+module._active = False
+provider.spawned.clear()
+provider.waited.clear()
+provider.declared.clear()
+module._camera_quality_waiter = lambda topic, timeout: (
+    quality_waits.append((topic, timeout)) or (True, "offline quality pass")
+)
 
 invalid_config = dict(config, source_mode="automatic")
 module.socket.if_nametoindex = lambda interface: 1 if interface == "offline0" else 0

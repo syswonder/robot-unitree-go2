@@ -15,11 +15,24 @@ import subprocess
 
 from robonix_api import Deferred, Err, Ok, Primitive
 
+from .first_motion_permit import PermitError, consume_first_motion_permit
 from .runtime_config import (
     ConfigError,
+    FIRST_MOTION_PROFILE,
     RuntimeConfig,
+    SECOND_MOTION_PROFILE,
+    STAGED_NAV2_PROFILE,
     normalize_config,
     prepare_private_directory,
+)
+from .second_motion_permit import (
+    PermitError as SecondMotionPermitError,
+    consume_second_motion_permit,
+)
+from .staged_nav2_permit import (
+    PermitError as StagedNav2PermitError,
+    STAGED_NAV2_ACK,
+    consume_staged_nav2_permit,
 )
 
 
@@ -90,7 +103,7 @@ def _spawn_runtime(runtime: RuntimeConfig) -> None:
         _processes.append(
             go2_chassis.spawn(
                 runtime.daemon_argv(_daemon_binary),
-                env=environment,
+                env=runtime.sdk_daemon_env(_daemon_binary),
                 log="sdk-daemon.log",
                 cwd=_package_root,
             )
@@ -123,6 +136,41 @@ def initialize(config):
         return Err(f"Go2 adapter parameter file is missing: {_params_file}")
     if runtime.starts_sdk_daemon and not _is_executable(_daemon_binary):
         return Err(f"Go2 SDK daemon is not built: {_daemon_binary}")
+
+    if runtime.starts_sdk_daemon:
+        if runtime.motion_profile == FIRST_MOTION_PROFILE:
+            try:
+                consumed = consume_first_motion_permit(
+                    runtime, os.environ, _package_root.parents[1]
+                )
+            except (OSError, PermitError) as error:
+                return Err(f"first-motion permit rejected: {error}")
+            print("consumed one-time first-motion permit " + consumed.name)
+        elif runtime.motion_profile == SECOND_MOTION_PROFILE:
+            try:
+                consumed = consume_second_motion_permit(
+                    runtime, os.environ, _package_root.parents[1]
+                )
+            except (OSError, SecondMotionPermitError) as error:
+                return Err(f"second-motion permit rejected: {error}")
+            print("consumed one-time second-motion permit " + consumed.name)
+        elif runtime.motion_profile == STAGED_NAV2_PROFILE:
+            if os.environ.get("GO2_STAGED_NAV2_RUNTIME_ACK") == STAGED_NAV2_ACK:
+                # Normal Robonix/Nav2 operation uses the already explicit
+                # runtime gate plus the adapter/daemon watchdogs.  Historical
+                # evidence bundles remain available in the legacy staged
+                # commissioning path, but are not a per-start requirement.
+                print("accepted staged-nav2 runtime acknowledgement")
+            else:
+                try:
+                    consumed = consume_staged_nav2_permit(
+                        runtime, os.environ, _package_root.parents[1]
+                    )
+                except (OSError, StagedNav2PermitError) as error:
+                    return Err(f"staged-nav2 permit rejected: {error}")
+                print("consumed one-time staged-nav2 permit " + consumed.name)
+        else:
+            return Err("motion profile has no permit consumer")
 
     try:
         _spawn_runtime(runtime)

@@ -84,12 +84,29 @@ require_clean_git_checkout() {
     exit 1
   }
   dirty="$(git -C "$path" status --porcelain --untracked-files=normal)"
-  [[ -z "$dirty" ]] || {
-    echo "audited upstream checkout is dirty: $label ($path)" >&2
-    printf '%s\n' "$dirty" >&2
-    echo "Commit, discard, or separately audit those changes before deployment." >&2
-    exit 1
-  }
+  [[ -z "$dirty" ]] && return 0
+
+  # These exceptions are label-specific, explicit, and exact. Each private
+  # receipt pins HEAD, raw porcelain status, and the complete tracked diff;
+  # each verifier also hard-codes its independently audited patch paths.
+  # Robonix has no dirty-receipt path and remains clean-only.
+  if [[ "$label" == "mapping" && -n "${ROBONIX_MAPPING_DIRTY_AUDIT_RECEIPT:-}" ]]; then
+    python3 "$DEPLOY_DIR/scripts/verify_dirty_upstream_audit.py" \
+      --workspace "$DEPLOY_DIR" \
+      --repo "$path" \
+      --receipt "$ROBONIX_MAPPING_DIRTY_AUDIT_RECEIPT" && return 0
+  fi
+  if [[ "$label" == "navigation" && -n "${ROBONIX_NAVIGATION_DIRTY_AUDIT_RECEIPT:-}" ]]; then
+    python3 "$DEPLOY_DIR/scripts/verify_navigation_dirty_upstream_audit.py" \
+      --workspace "$DEPLOY_DIR" \
+      --repo "$path" \
+      --receipt "$ROBONIX_NAVIGATION_DIRTY_AUDIT_RECEIPT" && return 0
+  fi
+
+  echo "audited upstream checkout is dirty: $label ($path)" >&2
+  printf '%s\n' "$dirty" >&2
+  echo "Commit, discard, or separately audit those changes before deployment." >&2
+  exit 1
 }
 
 # Scene must discover this robot's canonical contracts, subscribe with the
@@ -103,6 +120,10 @@ require_text "$ROBONIX_ROOT/system/scene/scene_service/service.py" \
   "robonix/primitive/lidar/lidar3d" "Scene canonical lidar3d contract"
 require_text "$ROBONIX_ROOT/system/scene/scene_service/service.py" \
   "robonix/primitive/chassis/odom" "Scene chassis odometry contract"
+require_text "$ROBONIX_ROOT/system/scene/scene_service/perception_policy.py" \
+  "def perception_enabled" "Scene strict perception policy"
+require_text "$ROBONIX_ROOT/system/scene/scene_service/service.py" \
+  "if not perception_enabled(config):" "Scene preview-only perception gate"
 require_text "$ROBONIX_ROOT/system/scene/scene_service/ingest/ros_subscribers.py" \
   "def topic_qos_policy" "Scene Atlas QoS policy"
 require_text "$ROBONIX_ROOT/system/scene/docker/Dockerfile" \
@@ -115,6 +136,9 @@ require_text "$ROBONIX_ROOT/system/scene/scripts/start.sh" \
 require_text "$ROBONIX_ROOT/system/scene/scripts/start.sh" \
   'ROBONIX_ADVERTISE_HOST="${ROBONIX_ADVERTISE_HOST:-}"' \
   "Scene provider advertise-host forwarding"
+require_text "$ROBONIX_ROOT/system/scene/scripts/start.sh" \
+  'if [[ "${ROBONIX_FORCE_CPU:-0}" != "1" ]]; then' \
+  "Scene Docker GPU opt-out gate"
 require_text "$ROBONIX_ROOT/system/scene/scripts/start.sh" \
   'SCENE_HOST_DATA_DIR="${SCENE_DATA_DIR:-' \
   "Scene host persistence directory"
@@ -165,6 +189,18 @@ require_text "$NAV_ROOT/scripts/start.sh" \
   "Navigation provider advertise-host forwarding"
 require_text "$NAV_ROOT/nav2_wrapper/atlas_bridge.py" \
   "cancel queued until goal acceptance" "Navigation pending-cancel latch"
+bash "$DEPLOY_DIR/scripts/check_navigation_velocity_contract.sh" "$NAV_ROOT"
+
+# rbnx may retain an older URL cache even after the manifest changes to an
+# exact local path. Any Navigation-looking runtime cache must satisfy the same
+# no-motion routing contract or startup/build fails before it can be executed.
+shopt -s nullglob
+NAV_CACHE_ROOTS=("$DEPLOY_DIR"/rbnx-boot/cache/*navigation*)
+shopt -u nullglob
+for cache_root in "${NAV_CACHE_ROOTS[@]}"; do
+  [[ -d "$cache_root" ]] || continue
+  bash "$DEPLOY_DIR/scripts/check_navigation_velocity_contract.sh" "$cache_root"
+done
 require_text "$NAV_ROOT/scripts/build.sh" \
   'rbnx codegen --mcp' "Navigation MCP-only code generation"
 forbid_text "$NAV_ROOT/scripts/build.sh" \

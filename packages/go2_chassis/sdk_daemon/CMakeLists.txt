@@ -30,6 +30,12 @@ target_compile_options(go2_sport_daemon PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(go2_sport_daemon PROPERTIES
   INSTALL_RPATH "\$ORIGIN/../lib"
 )
+# CMake emits DT_RUNPATH by default.  LD_LIBRARY_PATH has precedence over
+# RUNPATH, so a provider launched from a sourced ROS 2 shell could otherwise
+# load ROS's libddsc beside Unitree's bundled libddscxx.  Emit old-style
+# DT_RPATH as a second, binary-level isolation boundary; the provider also
+# supplies a daemon-only LD_LIBRARY_PATH containing this same private folder.
+target_link_options(go2_sport_daemon PRIVATE -Wl,--disable-new-dtags)
 
 install(TARGETS go2_sport_daemon RUNTIME DESTINATION bin)
 set(UNITREE_DDS_LIBRARY_DIR

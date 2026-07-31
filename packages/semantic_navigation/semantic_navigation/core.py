@@ -19,6 +19,8 @@ class LandmarkError(ValueError):
 
 
 _SEPARATORS = re.compile(r"[\s\u3000,，。.!！?？、;；:：'\"“”‘’()（）\[\]【】<>《》_-]+")
+_LANDMARK_KINDS = frozenset({"navigation", "marker"})
+DEFAULT_ARRIVAL_RADIUS_M = 0.35
 
 
 def normalize_text(value: str) -> str:
@@ -36,18 +38,76 @@ class Landmark:
     id: str
     name: str
     aliases: tuple[str, ...]
+    kind: str
     map_id: str
     map_generation: int
     frame_id: str
-    x: float
-    y: float
-    yaw: float
+    x: float | None
+    y: float | None
+    yaw: float | None
+    arrival_radius: float | None
+    region: tuple[tuple[float, float], ...] | None
     verified: bool
     metadata: dict[str, Any]
 
     @property
     def terms(self) -> tuple[str, ...]:
         return (self.name, *self.aliases)
+
+    @property
+    def navigable(self) -> bool:
+        return self.kind == "navigation"
+
+
+def _finite_number(value: Any, *, label: str) -> float:
+    if isinstance(value, bool):
+        raise LandmarkError(f"{label} must be a finite number")
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise LandmarkError(f"{label} must be a finite number") from exc
+    if not math.isfinite(result):
+        raise LandmarkError(f"{label} must be a finite number")
+    return result
+
+
+def _parse_region(value: Any, *, landmark_id: str) -> tuple[tuple[float, float], ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise LandmarkError(f"landmark {landmark_id!r} region must be a mapping")
+    points = value.get("points")
+    if not isinstance(points, list) or len(points) < 3:
+        raise LandmarkError(
+            f"landmark {landmark_id!r} region.points must contain at least three points"
+        )
+    parsed: list[tuple[float, float]] = []
+    for index, point in enumerate(points):
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise LandmarkError(
+                f"landmark {landmark_id!r} region.points[{index}] must be [x, y]"
+            )
+        parsed.append(
+            (
+                _finite_number(
+                    point[0], label=f"landmark {landmark_id!r} region.points[{index}].x"
+                ),
+                _finite_number(
+                    point[1], label=f"landmark {landmark_id!r} region.points[{index}].y"
+                ),
+            )
+        )
+    if len(set(parsed)) < 3:
+        raise LandmarkError(
+            f"landmark {landmark_id!r} region must contain three distinct points"
+        )
+    twice_area = sum(
+        x1 * y2 - x2 * y1
+        for (x1, y1), (x2, y2) in zip(parsed, parsed[1:] + parsed[:1])
+    )
+    if abs(twice_area) <= 1e-9:
+        raise LandmarkError(f"landmark {landmark_id!r} region polygon has zero area")
+    return tuple(parsed)
 
 
 class LandmarkStore:
@@ -109,13 +169,23 @@ class LandmarkStore:
             landmark_id = str(row.get("id", "")).strip()
             name = str(row.get("name", "")).strip()
             aliases_raw = row.get("aliases") or []
-            pose = row.get("pose") or {}
+            kind = str(row.get("kind", "navigation")).strip()
+            pose = row.get("pose")
+            arrival_radius_raw = row.get(
+                "arrival_radius", DEFAULT_ARRIVAL_RADIUS_M
+            )
+            region = _parse_region(row.get("region"), landmark_id=landmark_id)
             verified = row.get("verified", False)
             metadata = row.get("metadata") or {}
             if not landmark_id or not name:
                 raise LandmarkError(f"landmarks[{index}] requires id and name")
-            if not isinstance(aliases_raw, list) or not isinstance(pose, dict):
-                raise LandmarkError(f"landmark {landmark_id!r} aliases/pose have invalid types")
+            if kind not in _LANDMARK_KINDS:
+                raise LandmarkError(
+                    f"landmark {landmark_id!r} kind must be one of "
+                    f"{sorted(_LANDMARK_KINDS)}"
+                )
+            if not isinstance(aliases_raw, list):
+                raise LandmarkError(f"landmark {landmark_id!r} aliases must be a list")
             if not isinstance(verified, bool):
                 raise LandmarkError(
                     f"landmark {landmark_id!r} verified must be a YAML boolean"
@@ -123,24 +193,64 @@ class LandmarkStore:
             if not isinstance(metadata, dict):
                 raise LandmarkError(f"landmark {landmark_id!r} metadata must be a mapping")
             aliases = tuple(str(value).strip() for value in aliases_raw if str(value).strip())
-            try:
-                x = float(pose["x"])
-                y = float(pose["y"])
-                yaw = normalize_yaw(float(pose["yaw"]))
-            except (KeyError, TypeError, ValueError) as exc:
-                raise LandmarkError(f"landmark {landmark_id!r} has an invalid pose") from exc
-            if not all(math.isfinite(value) for value in (x, y, yaw)):
-                raise LandmarkError(f"landmark {landmark_id!r} pose must be finite")
+            x: float | None = None
+            y: float | None = None
+            yaw: float | None = None
+            if pose is not None:
+                if not isinstance(pose, dict):
+                    raise LandmarkError(f"landmark {landmark_id!r} pose must be a mapping")
+                try:
+                    x = _finite_number(
+                        pose["x"], label=f"landmark {landmark_id!r} pose.x"
+                    )
+                    y = _finite_number(
+                        pose["y"], label=f"landmark {landmark_id!r} pose.y"
+                    )
+                    yaw = normalize_yaw(
+                        _finite_number(
+                            pose["yaw"], label=f"landmark {landmark_id!r} pose.yaw"
+                        )
+                    )
+                except KeyError as exc:
+                    raise LandmarkError(
+                        f"landmark {landmark_id!r} pose requires x, y and yaw"
+                    ) from exc
+            if kind == "navigation" and pose is None:
+                raise LandmarkError(
+                    f"navigation landmark {landmark_id!r} requires a point pose"
+                )
+            if kind == "marker" and pose is None and region is None:
+                raise LandmarkError(
+                    f"marker {landmark_id!r} requires a point pose or region"
+                )
+            arrival_radius: float | None = None
+            if kind == "navigation":
+                arrival_radius = _finite_number(
+                    arrival_radius_raw,
+                    label=f"landmark {landmark_id!r} arrival_radius",
+                )
+                if not 0.05 <= arrival_radius <= 10.0:
+                    raise LandmarkError(
+                        f"landmark {landmark_id!r} arrival_radius must be "
+                        "between 0.05 and 10.0 metres"
+                    )
+            elif "arrival_radius" in row:
+                raise LandmarkError(
+                    f"non-navigation marker {landmark_id!r} cannot set arrival_radius"
+                )
             item = Landmark(
                 id=landmark_id,
                 name=name,
                 aliases=aliases,
+                kind=kind,
                 map_id=map_id,
                 map_generation=map_generation,
                 frame_id=frame_id,
                 x=x,
                 y=y,
                 yaw=yaw,
+                arrival_radius=arrival_radius,
+                region=region,
                 verified=verified,
                 metadata=dict(metadata),
             )
@@ -184,12 +294,20 @@ class LandmarkStore:
             )
 
         matches: list[tuple[int, Landmark, str]] = []
+        marker_matches: list[tuple[int, Landmark, str]] = []
         for item in self.landmarks:
             for term in item.terms:
                 normalized = normalize_text(term)
                 if normalized and normalized in query:
-                    matches.append((len(normalized), item, term))
+                    target = matches if item.navigable else marker_matches
+                    target.append((len(normalized), item, term))
         if not matches:
+            if marker_matches:
+                markers = sorted({item.name for _, item, _ in marker_matches})
+                raise LandmarkError(
+                    f"matched non-navigation marker(s) {markers}; "
+                    "markers cannot be dispatched as navigation goals"
+                )
             raise LandmarkError(f"unknown semantic landmark in {utterance!r}")
         # Mentioning two different saved places is not made safe by choosing
         # the longer spelling. A speech command such as "先去门口再去售货机"

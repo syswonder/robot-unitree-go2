@@ -29,6 +29,7 @@ class RepositorySafetyTest(unittest.TestCase):
         self.assertRegex(env, r"(?m)^GO2_ALLOW_MOTION=false$")
         self.assertRegex(env, r"(?m)^GO2_OPERATOR_PRESENT=false$")
         self.assertRegex(env, r"(?m)^GO2_ALLOWED_MODES=$")
+        self.assertRegex(env, r"(?m)^GO2_ALLOWED_STATE_MARKERS=$")
 
         deployment = yaml.safe_load(
             (ROOT / "robonix_manifest.yaml").read_text(encoding="utf-8")
@@ -44,11 +45,22 @@ class RepositorySafetyTest(unittest.TestCase):
             "scripts/list_go2_topics.sh",
             "scripts/check_tf.sh",
             "scripts/collect_go2_publisher_locators_readonly.sh",
-            "scripts/check_runtime_ownership.sh",
         ):
             with self.subTest(relative=relative):
                 source = (ROOT / relative).read_text(encoding="utf-8")
                 self.assertIn("--no-daemon", source)
+        ownership_wrapper = (
+            ROOT / "scripts" / "check_runtime_ownership.sh"
+        ).read_text(encoding="utf-8")
+        ownership_checker = (
+            ROOT / "scripts" / "check_runtime_ownership.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("ros2 topic info", ownership_wrapper.replace("`", ""))
+        self.assertIn("_rclpy.Node(", ownership_checker)
+        self.assertIn("get_count_publishers", ownership_checker)
+        self.assertNotIn("from rclpy.node import Node", ownership_checker)
+        self.assertNotIn("create_publisher", ownership_checker)
+        self.assertNotIn("create_subscription", ownership_checker)
 
     def test_readonly_services_are_loopback_and_use_short_socket_defaults(self) -> None:
         deployment = yaml.safe_load(
@@ -61,6 +73,9 @@ class RepositorySafetyTest(unittest.TestCase):
             item for item in deployment["primitive"] if item["name"] == "go2_sensors"
         )
         self.assertEqual(dashboard["config"]["host"], "127.0.0.1")
+        self.assertEqual(
+            dashboard["config"]["pose_topic"], "/robonix/map/pose"
+        )
         self.assertNotIn("camera_ipc_socket", sensors["config"])
         self.assertEqual(
             sensors["config"]["source_mode"],
@@ -100,24 +115,40 @@ class RepositorySafetyTest(unittest.TestCase):
     def test_semantic_router_is_a_fail_closed_boot_dependency(self) -> None:
         start = (ROOT / "start.sh").read_text(encoding="utf-8")
         stop = (ROOT / "stop.sh").read_text(encoding="utf-8")
+        signal_guard = (
+            ROOT / "scripts" / "runtime_signal_guard.sh"
+        ).read_text(encoding="utf-8")
         health = (ROOT / "scripts" / "check_semantic_intent_health.py").read_text(
             encoding="utf-8"
         )
 
         self.assertLess(
             start.index("start_semantic_router\n"),
-            start.index('rbnx boot --no-update-check -f "$MANIFEST"'),
+            start.index('"$RBNX_CLI" boot --no-update-check -f "$MANIFEST"'),
         )
         self.assertIn("semantic-intent-router.lock", start)
         self.assertIn("go2-semantic-router-lease-v1", start)
         self.assertIn('"${expected_vlm_url}/models"', start)
         self.assertIn('process_is_same_and_live "$SEMANTIC_ROUTER_PID"', start)
-        self.assertIn("wait -n -p EXITED_RUNTIME_PID", start)
+        self.assertIn("go2_runtime_install_cleanup_traps", start)
+        self.assertIn("go2_runtime_wait_for_first_exit", start)
+        self.assertIn("wait -n -p EXITED_RUNTIME_PID", signal_guard)
+        self.assertIn("EXITED_RUNTIME_PID=\"${EXITED_RUNTIME_PID:-}\"", signal_guard)
         self.assertIn("stop_semantic_router", stop)
         self.assertIn("process_holds_lock", stop)
         self.assertIn("127.0.0.1", health)
         self.assertIn('parsed.path != "/v1/models"', health)
         self.assertIn("ProxyHandler({})", health)
+        self.assertEqual(
+            start.count("export SEMANTIC_INTENT_EXECUTION_MODE=live"), 1
+        )
+        self.assertEqual(
+            start.count("export SEMANTIC_INTENT_EXECUTION_MODE=preview"), 1
+        )
+        self.assertLess(
+            start.index("export GO2_ALLOW_MOTION=false", start.index("case \"${GO2_ALLOW_MOTION,,}\"")),
+            start.index("export SEMANTIC_INTENT_EXECUTION_MODE=preview"),
+        )
 
     def test_start_and_stop_fall_back_to_workspace_rbnx(self) -> None:
         for relative in ("start.sh", "stop.sh"):
@@ -175,6 +206,9 @@ class RepositorySafetyTest(unittest.TestCase):
         self.assertEqual(env["SPEECH_BIND_ADDR"], "127.0.0.1")
         self.assertEqual(env["MAPPING_ENABLE_VIZ"], "false")
         self.assertEqual(env["MAPPING_WEBUI_HOST"], "127.0.0.1")
+        self.assertEqual(env["SCENE_WEB_HOST"], "127.0.0.1")
+        self.assertEqual(env["ROBONIX_FORCE_CPU"], "1")
+        self.assertEqual(env["SCENE_CG_FORCE_CPU"], "1")
         self.assertNotIn("SCENE_WEB_PORT", env)
         self.assertNotIn("MAPPING_WEBUI_PORT", env)
         self.assertEqual(
@@ -190,7 +224,8 @@ class RepositorySafetyTest(unittest.TestCase):
             if listen is not None:
                 with self.subTest(system=name):
                     self.assertTrue(str(listen).startswith("127.0.0.1:"))
-        self.assertEqual(deployment["system"]["scene"]["web_port"], 0)
+        self.assertEqual(deployment["system"]["scene"]["web_host"], "127.0.0.1")
+        self.assertEqual(deployment["system"]["scene"]["web_port"], 50107)
 
         mapping = next(
             item for item in deployment["service"] if item["name"] == "mapping"
@@ -215,6 +250,7 @@ class RepositorySafetyTest(unittest.TestCase):
             "export SPEECH_BIND_ADDR=127.0.0.1",
             "export MAPPING_ENABLE_VIZ=false",
             "export MAPPING_WEBUI_HOST=127.0.0.1",
+            "export SCENE_WEB_HOST=127.0.0.1",
         )
         for source in (start, build):
             for expected in owned:
@@ -349,12 +385,17 @@ class RepositorySafetyTest(unittest.TestCase):
         self.assertIn('path="${path#\\\'}"', compatibility)
         self.assertIn("robonix/primitive/lidar/lidar3d", compatibility)
         self.assertIn("robonix/primitive/chassis/odom", compatibility)
+        self.assertIn("Scene strict perception policy", compatibility)
+        self.assertIn("Scene preview-only perception gate", compatibility)
+        self.assertIn("if not perception_enabled(config):", compatibility)
         self.assertIn("def topic_qos_policy", compatibility)
         self.assertIn("ros-humble-rmw-cyclonedds-cpp", compatibility)
         self.assertIn("cancel queued until goal acceptance", compatibility)
         self.assertIn("ROBONIX_PROVIDER_BIND_HOST", compatibility)
         self.assertIn("host=self._bind_host", compatibility)
         self.assertIn("ROBONIX_ADVERTISE_HOST", compatibility)
+        self.assertIn("Scene Docker GPU opt-out gate", compatibility)
+        self.assertIn("ROBONIX_FORCE_CPU", compatibility)
         self.assertIn("SCENE_HOST_DATA_DIR", compatibility)
         self.assertIn('/data/robonix', compatibility)
         self.assertIn('MAPPING_ENABLE_VIZ="${MAPPING_ENABLE_VIZ:-false}"', compatibility)
@@ -389,9 +430,21 @@ class RepositorySafetyTest(unittest.TestCase):
         )
         self.assertIn("verify_upstream_compatibility.sh", build)
         self.assertIn("verify_submodule_pins.sh", build)
-        self.assertIn("cargo build --locked -p robonix-codegen", build)
+        self.assertIn("ROBONIX_CARGO_PACKAGE_ARGS=(-p robonix-codegen)", build)
+        self.assertIn('ROBONIX_CARGO_PACKAGE_ARGS+=(-p "$package")', build)
+        self.assertIn('--manifest-path "$ROBONIX_SOURCE_ROOT/Cargo.toml"', build)
         self.assertIn("export ROBONIX_CODEGEN_BIN=", build)
         self.assertIn("WORKSPACE_RBNX_PYTHON_DIR", build)
+        self.assertIn("WORKSPACE_RBNX_PYTHON_DIR", start)
+        self.assertIn(
+            '"$(command -v python3)" == "$WORKSPACE_RBNX_PYTHON_DIR/python3"',
+            start,
+        )
+        self.assertLess(
+            start.index('source "$DEPLOY_DIR/.env"'),
+            start.index('export PATH="$WORKSPACE_RBNX_PYTHON_DIR:$PATH"'),
+        )
+        self.assertIn("python3 -c 'import grpc'", start)
         self.assertIn("import grpc_tools.protoc", build)
         self.assertIn("export RBNX_BUILD_PROXY=1", build)
         self.assertNotIn("127.0.0.1:7897", build)
@@ -459,10 +512,11 @@ class RepositorySafetyTest(unittest.TestCase):
             self.assertNotIn(forbidden, soma)
 
     def test_navigation_tree_has_no_spin_or_backup(self) -> None:
-        xml = ET.parse(ROOT / "config" / "navigate.xml")
-        tags = {node.tag for node in xml.iter()}
-        self.assertNotIn("Spin", tags)
-        self.assertNotIn("BackUp", tags)
+        for filename in ("navigate.xml", "navigate_through_poses.xml"):
+            xml = ET.parse(ROOT / "config" / filename)
+            tags = {node.tag for node in xml.iter()}
+            self.assertNotIn("Spin", tags)
+            self.assertNotIn("BackUp", tags)
 
     def test_audit_scripts_do_not_publish(self) -> None:
         readonly_names = ("check", "audit", "list", "record")

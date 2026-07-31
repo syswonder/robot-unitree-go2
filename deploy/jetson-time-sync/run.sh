@@ -128,6 +128,12 @@ esac
   echo "evidence bundle must be a directory" >&2
   exit 50
 }
+readonly post_gate_audit="${bundle_path}/post-bootstrap-quality.json"
+readonly post_gate_samples="${bundle_path}/post-bootstrap-quality-samples.jsonl"
+if [[ -e "${post_gate_audit}" || -e "${post_gate_samples}" ]]; then
+  echo "post-bootstrap audit output already exists; refusing overwrite" >&2
+  exit 50
+fi
 
 # This is intentionally performed at formal launch time, not only when the
 # approval was prepared.  Raw PCAP, topic-info and correlation files are all
@@ -344,6 +350,7 @@ fi
 
 echo "Waiting for feeder freshness and chrony GO2 selection readiness."
 deadline=$((SECONDS + 180))
+refclock_selected=0
 while (( SECONDS < deadline )); do
   feeder_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${feeder_container}")"
   if [[ "${feeder_health}" == "healthy" \
@@ -351,9 +358,9 @@ while (( SECONDS < deadline )); do
     && chronyd_caps_exact \
     && chronyd_single_process \
     && chronyd_selected_go2; then
-    trap - ERR INT TERM
-    echo "READY: feeder is fresh/authorized and chronyd selected GO2."
-    exit 0
+    refclock_selected=1
+    echo "REFCLOCK SELECTED: beginning mandatory five-minute quality audit."
+    break
   fi
   if [[ "$(docker inspect --format '{{.State.Running}}' "${feeder_container}")" != "true" \
     || "$(docker inspect --format '{{.State.Running}}' "${chronyd_container}")" != "true" ]]; then
@@ -362,6 +369,46 @@ while (( SECONDS < deadline )); do
   fi
   sleep 2
 done
-echo "readiness timeout; removing both time containers" >&2
-cleanup_failed_start
-exit 56
+if (( refclock_selected == 0 )); then
+  echo "readiness timeout; removing both time containers" >&2
+  cleanup_failed_start
+  exit 56
+fi
+
+readonly container_runtime_root="/dev/shm/robonix-time"
+set +e
+docker exec --user 10001:10001 "${feeder_container}" \
+  python3 /opt/robonix/deploy/time-sync/post_bootstrap_quality_gate.py \
+  --health-file "${container_runtime_root}/feeder-health.json" \
+  --approval-file "${container_runtime_root}/go2-clock-ref-approval.json" \
+  --output "${container_runtime_root}/post-bootstrap-quality.json" \
+  --samples-output "${container_runtime_root}/post-bootstrap-quality-samples.jsonl"
+post_gate_status=$?
+set -e
+
+for filename in post-bootstrap-quality.json post-bootstrap-quality-samples.jsonl; do
+  if ! docker cp \
+    "${feeder_container}:${container_runtime_root}/${filename}" \
+    "${bundle_path}/${filename}"; then
+    echo "failed to retain the post-bootstrap quality audit" >&2
+    cleanup_failed_start
+    exit 57
+  fi
+  chmod 0600 "${bundle_path}/${filename}"
+done
+if (( post_gate_status != 0 )); then
+  echo "five-minute post-bootstrap quality gate failed closed" >&2
+  cleanup_failed_start
+  exit 58
+fi
+if [[ "$(docker inspect --format '{{.State.Running}}' "${feeder_container}")" != "true" \
+  || "$(docker inspect --format '{{.State.Running}}' "${chronyd_container}")" != "true" ]] \
+  || ! chronyd_caps_exact \
+  || ! chronyd_single_process \
+  || ! chronyd_selected_go2; then
+  echo "time components lost readiness after the five-minute audit" >&2
+  cleanup_failed_start
+  exit 59
+fi
+trap - ERR INT TERM
+echo "READY: audited continuous five-minute offset/drift gate passed."

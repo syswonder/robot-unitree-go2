@@ -50,6 +50,7 @@ RUN groupadd --gid 10002 robonix-time \
 
 COPY deploy/time-sync/go2_time_core.py /opt/robonix/deploy/time-sync/go2_time_core.py
 COPY deploy/time-sync/go2_clock_ref.py /opt/robonix/deploy/time-sync/go2_clock_ref.py
+COPY deploy/time-sync/post_bootstrap_quality_gate.py /opt/robonix/deploy/time-sync/post_bootstrap_quality_gate.py
 COPY scripts/probe_go2_time_readonly.py /opt/robonix/scripts/probe_go2_time_readonly.py
 COPY deploy/jetson-time-sync/config /opt/robonix/time-sync/config
 COPY deploy/jetson-time-sync/entrypoint.sh /opt/robonix/time-sync/entrypoint.sh
@@ -59,6 +60,7 @@ COPY deploy/jetson-time-sync/validate-network.sh /opt/robonix/time-sync/validate
 RUN chmod 0444 \
       /opt/robonix/deploy/time-sync/go2_time_core.py \
       /opt/robonix/deploy/time-sync/go2_clock_ref.py \
+      /opt/robonix/deploy/time-sync/post_bootstrap_quality_gate.py \
       /opt/robonix/scripts/probe_go2_time_readonly.py \
       /opt/robonix/time-sync/config/*.conf \
     && chmod 0555 \

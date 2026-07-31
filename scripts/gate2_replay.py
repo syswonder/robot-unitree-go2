@@ -536,6 +536,9 @@ def _write_runtime_files(scenario: dict[str, Any], run_dir: Path) -> dict[str, P
         "__ROBONIX_ODOM_TOPIC__": scenario["topics"]["odom"],
         "__ROBONIX_SCAN_TOPIC__": scenario["topics"]["scan"],
         "__ROBONIX_BT_XML__": str(ROOT / "config" / "navigate.xml"),
+        "__ROBONIX_BT_THROUGH_POSES_XML__": str(
+            ROOT / "config" / "navigate_through_poses.xml"
+        ),
         "__ROBONIX_FOOTPRINT__": "[[0.40, 0.25], [0.40, -0.25], [-0.40, -0.25], [-0.40, 0.25]]",
     }
     for token, value in substitutions.items():

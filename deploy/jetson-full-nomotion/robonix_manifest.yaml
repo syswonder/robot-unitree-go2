@@ -97,7 +97,9 @@ service:
       webui_port: 8091
       map_id: "${GO2_MAP_ID}"
       map_mode: "${GO2_MAP_MODE}"
-      deskew_lidar: false
+      # UniLiDAR packets expose a monotonic per-point `time` channel; external
+      # chassis odometry supplies the fixed-frame motion for deskewing.
+      deskew_lidar: true
       params_file: /opt/robonix/deploy/config/rtabmap_params.yaml
       rtabmap_inputs: [lidar, imu, odom]
       sensor_providers:
@@ -112,6 +114,7 @@ service:
     config:
       params_file: /opt/robonix/deploy/config/nav2_params_go2.yaml
       bt_xml_file: /opt/robonix/deploy/config/navigate.xml
+      bt_through_poses_xml_file: /opt/robonix/deploy/config/navigate_through_poses.xml
       use_sim_time: false
       action_wait_s: 90.0
       velocity_output_topic: /robonix/nomotion/cmd_vel
@@ -150,6 +153,7 @@ service:
       cloud_topic: /scanner/cloud
       scan_topic: /scanner/scan
       map_topic: /map
+      pose_topic: /robonix/map/pose
       odom_topic: /odom
       map_frame: map
       base_frame: base_link

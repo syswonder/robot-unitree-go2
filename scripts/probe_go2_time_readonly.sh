@@ -5,9 +5,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+readonly ROS_SETUP="${ROS_SETUP_FILE:-/opt/ros/humble/setup.bash}"
+readonly UNITREE_SETUP="${UNITREE_ROS2_SETUP:-${PROJECT_ROOT}/rbnx-build/unitree_ros2/install/setup.bash}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUTPUT_DIR="${1:-${PROJECT_ROOT}/logs/go2-readonly/${STAMP}-time-probe}"
-DURATION_SECONDS="${2:-${GO2_TIME_PROBE_DURATION_SECONDS:-60}}"
+DURATION_SECONDS="${2:-${GO2_TIME_PROBE_DURATION_SECONDS:-75}}"
 # A 10-minute Go2 + MID-360 run commonly exceeds 300k aggregate samples.
 # Keep the default bounded while allowing the documented short-run gate to
 # reach its duration instead of terminating at the sample cap.
@@ -16,7 +18,8 @@ MAX_SAMPLES="${GO2_TIME_PROBE_MAX_SAMPLES:-500000}"
 cat <<'BANNER'
 =======================================================================
   READ-ONLY / 只读取证：Go2 / NX / MID-360 源时间戳
-  只创建四个 ROS 订阅；不创建 publisher，不调用 Unitree API，
+  只创建五个 ROS 订阅（四路资格流 + fallback 见证流）；
+  不创建 publisher，不调用 Unitree API，
   不执行 date/timedatectl/chrony，不请求任何调时权限。
 =======================================================================
 BANNER
@@ -48,6 +51,39 @@ case "${OUTPUT_DIR}" in
     ;;
 esac
 
+source_setup_or_exit() {
+  local label="$1"
+  local setup_file="$2"
+  local source_status
+
+  if [[ ! -r "${setup_file}" ]]; then
+    printf '缺少 %s 环境脚本：%s；未创建任何 ROS 订阅。\n' \
+      "${label}" "${setup_file}" >&2
+    exit 127
+  fi
+
+  # ROS-generated setup files may inspect variables that are not defined in a
+  # clean shell.  Disable nounset only while sourcing, then restore the
+  # wrapper's fail-closed `set -u` policy before any probe process can start.
+  set +u
+  # shellcheck disable=SC1090
+  if source "${setup_file}"; then
+    source_status=0
+  else
+    source_status=$?
+  fi
+  set -u
+
+  if (( source_status != 0 )); then
+    printf '无法加载 %s 环境脚本（状态 %d）：%s；未创建任何 ROS 订阅。\n' \
+      "${label}" "${source_status}" "${setup_file}" >&2
+    exit 127
+  fi
+}
+
+source_setup_or_exit "ROS 2" "${ROS_SETUP}"
+source_setup_or_exit "Unitree ROS 2 overlay" "${UNITREE_SETUP}"
+
 outer_timeout=$((DURATION_SECONDS + 15))
 set +e
 timeout --signal=TERM --kill-after=15s --preserve-status "${outer_timeout}s" \
@@ -58,7 +94,8 @@ timeout --signal=TERM --kill-after=15s --preserve-status "${outer_timeout}s" \
     --primary-topic "${GO2_TIME_PRIMARY_TOPIC:-/sportmodestate}" \
     --fallback-topic "${GO2_TIME_FALLBACK_TOPIC:-/lf/sportmodestate}" \
     --cloud-topic "${GO2_TIME_CLOUD_TOPIC:-/utlidar/cloud}" \
-    --imu-topic "${GO2_TIME_IMU_TOPIC:-/utlidar/imu}"
+    --imu-topic "${GO2_TIME_IMU_TOPIC:-/utlidar/imu}" \
+    --odom-topic "${GO2_TIME_ODOM_TOPIC:-/utlidar/robot_odom}"
 status=$?
 set -e
 

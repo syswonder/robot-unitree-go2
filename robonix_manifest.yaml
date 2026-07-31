@@ -12,6 +12,9 @@ catalog:
 
 env:
   RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+  # Derived by build.sh/start.sh from the complete motion gate. Local config
+  # cannot point a motion-disabled deployment back at canonical /cmd_vel.
+  ROBONIX_VELOCITY_OUTPUT_TOPIC: "${ROBONIX_VELOCITY_OUTPUT_TOPIC}"
   ROBONIX_PROVIDER_BIND_HOST: 127.0.0.1
   ROBONIX_ADVERTISE_HOST: 127.0.0.1
   SPEECH_BIND_ADDR: 127.0.0.1
@@ -20,6 +23,14 @@ env:
   # but must never listen on the Go2 control network.
   MAPPING_WEBUI_HOST: 127.0.0.1
   ROBONIX_SCENE_ROS_DISTRO: humble
+  SCENE_WEB_HOST: 127.0.0.1
+  # The workstation has an NVIDIA display GPU, but its Docker daemon has no
+  # usable NVIDIA CDI/runtime integration.  Scene's host-side nvidia-smi probe
+  # would otherwise add `--gpus all` and Docker would abort before the CPU
+  # implementation can start.  Keep this deployment deterministic and let the
+  # perception pipeline select its supported CPU backend explicitly.
+  ROBONIX_FORCE_CPU: "1"
+  SCENE_CG_FORCE_CPU: "1"
   SCENE_MAP_ID: "${GO2_MAP_ID}"
   # Scene's Docker launcher mounts this host directory at /data/robonix.
   # Keep object memory, graph cache and annotations on their in-container
@@ -55,7 +66,10 @@ system:
     log: info
   scene:
     log: info
-    web_port: 0
+    # Scene's semantic map/annotation UI is an operator surface. Keep it on
+    # loopback even while the Go2 DDS interface is attached.
+    web_host: 127.0.0.1
+    web_port: 50107
     # Keep observations absent: Scene's reconciler discovers primitives and
     # mapping outputs after their lifecycle providers come online.
 
@@ -67,6 +81,12 @@ primitive:
       state_fallback_topic: /lf/sportmodestate
       twist_in_topic: /cmd_vel
       odom_topic: /odom
+      # The generic manifest remains on SportModeState odometry. Corrected
+      # workstation renderers explicitly select external_verified and route
+      # this private input to the chassis; never point it back at /odom.
+      odom_source: sport_state
+      external_odom_topic: /robonix/time_corrected/raw/utlidar/robot_odom
+      publish_odom_tf: true
       imu_topic: /imu/data
       odom_frame: odom
       base_frame: base_link
@@ -107,7 +127,7 @@ primitive:
       camera_info_topic: /camera/color/camera_info
       camera_status_topic: /go2/sensors/status
       camera_frame: front_camera
-      camera_fps: 10.0
+      camera_fps: 5.0
 
   - name: robot_description
     path: ${ROBONIX_DEPLOY_DIR}/packages/go2_description
@@ -133,10 +153,38 @@ service:
       webui_port: 8091
       map_id: "${GO2_MAP_ID}"
       map_mode: "${GO2_MAP_MODE}"
-      # Keep deskew disabled until the read-only PointCloud2 audit proves a
-      # usable per-point timestamp field on this exact Go2 firmware/edition.
-      deskew_lidar: false
+      # The hardware PointCloud2 audit found a monotonic per-point `time`
+      # channel spanning about 63 ms in every UniLiDAR packet.  Use the
+      # external odom TF to compensate that interval before mapping.
+      deskew_lidar: true
+      # The MID-360 packet pattern is sparse and non-repetitive. Align a
+      # bounded four-frame deskewed window in odom, then project it to a
+      # 0.5-degree LaserScan so unobserved bearings stay unknown instead of
+      # producing radial free-space spokes.
+      dense_scan_2d: true
+      # Refine only consecutive graph edges against the conditioned scan.
+      # Spatial proximity remains disabled so similar corridor sections
+      # cannot create unrelated closures.
+      dense_scan_refine_neighbors: true
       params_file: config/rtabmap_params.yaml
+      # These deployment-local values intentionally override the conservative
+      # raw-cloud defaults in rtabmap_params.yaml for this opt-in chain.
+      rtabmap_params:
+        Reg/Strategy: 1
+        Reg/Force3DoF: true
+        RGBD/NeighborLinkRefining: true
+        RGBD/ProximityBySpace: false
+        RGBD/ProximityPathMaxNeighbors: 0
+        Icp/PointToPlane: true
+        Icp/PointToPlaneK: 5
+        Icp/PointToPlaneMinComplexity: 0.02
+        Icp/PointToPlaneLowComplexityStrategy: 1
+        Icp/CorrespondenceRatio: 0.20
+        Icp/MaxCorrespondenceDistance: 0.15
+        Icp/MaxTranslation: 0.10
+        Icp/MaxRotation: 0.10
+        Icp/RangeMin: 0.492
+        Icp/RangeMax: 6.0
       rtabmap_inputs: [lidar, imu, odom]
       sensor_providers:
         lidar3d: go2_sensors
@@ -161,6 +209,8 @@ service:
     config:
       params_file: config/nav2_params_go2.yaml
       bt_xml_file: config/navigate.xml
+      bt_through_poses_xml_file: config/navigate_through_poses.xml
+      velocity_output_topic: "${ROBONIX_VELOCITY_OUTPUT_TOPIC}"
       use_sim_time: false
       action_wait_s: 90.0
       provider_ids:
@@ -189,7 +239,9 @@ service:
       # Must not exceed the SimpleGoalChecker XY window in Nav2 params.
       guard_terminal_xy_m: 0.20
       guard_terminal_timeout_s: 12.0
-      guard_no_progress_s: 3.0
+      # Slow but measured Go2 yaw progress must not be mistaken for a stuck
+      # terminal turn.  The cumulative rotation cap remains independent.
+      guard_no_progress_s: 6.0
       guard_global_spin_timeout_s: 18.0
       guard_global_spin_limit_rad: 4.20
 
@@ -199,10 +251,22 @@ service:
       host: 127.0.0.1
       port: ${GO2_DASHBOARD_PORT}
       camera_topic: /camera/color/image_raw
+      d435i_color_topic: /go2/d435i/color/image_raw
+      d435i_depth_topic: /go2/d435i/aligned_depth_to_color/image_raw
+      d435i_camera_info_topic: /go2/d435i/color/camera_info
       cloud_topic: /scanner/cloud
       scan_topic: /scanner/scan
       map_topic: /map
+      pose_topic: /robonix/map/pose
       odom_topic: /odom
+      nav_status_topic: /navigate_to_pose/_action/status
+      initial_pose_topic: /initialpose
+      map_lifecycle_topic: /robonix/map/lifecycle
+      initial_pose_maps_dir: ${ROBONIX_DEPLOY_DIR}/rbnx-build/data/maps
+      # Automatic restore remains off because the saved operator seed is valid
+      # only when the robot is physically returned to the same marked start.
+      # The dashboard offers an exact map_id+generation-confirmed restore.
+      initial_pose_auto_restore: false
       map_frame: map
       base_frame: base_link
       # The browser route remains inert unless the local .env value is exactly

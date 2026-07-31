@@ -35,6 +35,8 @@ _MAX_REQUEST_BYTES = 2 * 1024 * 1024
 _TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "CANCELED"})
 _NONTERMINAL_STATES = frozenset({"STARTING", "PENDING", "RUNNING"})
 _KNOWN_STATES = _TERMINAL_STATES | _NONTERMINAL_STATES
+_EXECUTION_MODES = frozenset({"preview", "live"})
+_PREVIEW_GOAL_PREFIX = "语义导航预览："
 _STOP_UTTERANCES = frozenset(
     normalize_text(value)
     for value in (
@@ -237,6 +239,9 @@ def _detail_mapping(output: dict[str, Any]) -> dict[str, Any]:
 
 
 def _target_from_output(output: dict[str, Any]) -> str:
+    direct = output.get("landmark")
+    if direct is not None and str(direct).strip():
+        return str(direct).strip()
     detail = _detail_mapping(output)
     value = detail.get("landmark")
     return str(value).strip() if value is not None else ""
@@ -245,11 +250,42 @@ def _target_from_output(output: dict[str, Any]) -> str:
 def _run_id_from_output(output: dict[str, Any]) -> str:
     """Recover the semantic run id from a response or its durable detail."""
 
-    direct = str(output.get("run_id", "")).strip()
+    for key in ("run_id", "semantic_run_id"):
+        direct = str(output.get(key, "")).strip()
+        if direct:
+            return direct
+    detail = _detail_mapping(output)
+    return str(detail.get("semantic_run_id", "")).strip()
+
+
+def _state_from_output(output: dict[str, Any]) -> str:
+    direct = str(output.get("state", "")).strip().upper()
     if direct:
         return direct
     detail = _detail_mapping(output)
-    return str(detail.get("semantic_run_id", "")).strip()
+    return str(detail.get("state", "")).strip().upper()
+
+
+def _navigation_completion_state(output: dict[str, Any]) -> str:
+    """Normalize the completion shape returned by a Robonix skill leaf.
+
+    Executor may keep a skill leaf open until its provider task is terminal. In
+    that case the navigate contract produces the provider's status-shaped
+    result instead of its initial ``accepted/run_id`` response. A failed leaf
+    may likewise carry a provider-confirmed terminal snapshot directly.
+    """
+
+    state = _state_from_output(output)
+    if output.get("known") is True and state in _KNOWN_STATES:
+        return state
+    detail = _detail_mapping(output)
+    remote_terminal = (
+        output.get("remote_terminal") is True
+        or detail.get("remote_terminal") is True
+    )
+    if remote_terminal and state in _TERMINAL_STATES:
+        return state
+    return ""
 
 
 def _advance_active(
@@ -264,20 +300,31 @@ def _advance_active(
     """
 
     for leaf in leaves:
-        if leaf.get("success") is not True:
-            continue
         contract = str(leaf.get("contract_id", ""))
         output = _mapping(leaf.get("output"))
         if contract == NAV_CONTRACT:
             run_id = _run_id_from_output(output)
-            if output.get("accepted") is True and run_id:
+            completion_state = _navigation_completion_state(output)
+            if completion_state and run_id:
+                active = ActiveRun(
+                    run_id=run_id,
+                    target=_target_from_output(output),
+                    state=completion_state,
+                )
+            elif (
+                leaf.get("success") is True
+                and output.get("accepted") is True
+                and run_id
+            ):
                 active = ActiveRun(
                     run_id=run_id,
                     target=_target_from_output(output),
                     state="RUNNING",
                 )
         elif contract == STATUS_CONTRACT:
-            state = str(output.get("state", "")).strip().upper()
+            if leaf.get("success") is not True:
+                continue
+            state = _state_from_output(output)
             run_id = _run_id_from_output(output)
             target = _target_from_output(output)
             if output.get("known") is not True or state not in _KNOWN_STATES:
@@ -391,8 +438,102 @@ def _start_navigation(target: str) -> Decision:
     )
 
 
-def decide(messages: list[dict[str, Any]], store: LandmarkStore) -> Decision:
+def _execution_mode(value: Any) -> str:
+    normalized = str(value or "preview").strip().lower()
+    if normalized not in _EXECUTION_MODES:
+        raise ValueError("semantic intent execution mode must be preview or live")
+    return normalized
+
+
+def _preview(messages: list[dict[str, Any]], store: LandmarkStore) -> Decision:
+    """Resolve one intent for display while emitting no capability leaf.
+
+    Liaison always submits an ASR final to Pilot.  In a motion-disabled boot,
+    this model-side policy is therefore the boundary that lets the real
+    Speech/Liaison/Pilot path demonstrate intent parsing without allowing
+    Executor to receive a semantic-navigation, Nav2, ROS, or Unitree call.
+    The saved name may be recognised even when its approach pose is still an
+    unverified template; that condition is reported as a blocker, never
+    relaxed into an executable target.
+    """
+
+    turn = current_turn(messages)
+    normalized = normalize_text(turn.command)
+    if not normalized:
+        return Decision(
+            _envelope(
+                content="未识别到可预览的语义导航指令；未调用任何能力",
+                description="motion-disabled semantic preview: empty command",
+            )
+        )
+    if normalized in _STOP_UTTERANCES:
+        return Decision(
+            _envelope(
+                content="当前是运动禁用预览模式，没有启动导航任务",
+                description="motion-disabled semantic preview: no active run",
+                task_update={
+                    "goal": f"{_PREVIEW_GOAL_PREFIX}停止导航",
+                    "success_criterion": (
+                        "阻塞原因：GO2_ALLOW_MOTION=false；预览模式未调用 "
+                        "Robonix navigation、Nav2 或 Unitree API"
+                    ),
+                    "status": "done",
+                },
+            )
+        )
+
+    try:
+        landmark = store.resolve(
+            turn.command,
+            expected_map_id=store.map_id,
+            expected_generation=store.map_generation,
+            require_verified=False,
+        )
+    except LandmarkError as error:
+        return Decision(
+            _envelope(
+                content=f"未找到唯一语义目标：{error}；未调用任何能力",
+                description="motion-disabled semantic preview: target rejected",
+            )
+        )
+
+    blockers = [
+        "GO2_ALLOW_MOTION=false",
+        "预览模式禁止执行",
+        "map/localization/Nav2 就绪状态未通过",
+    ]
+    if not landmark.verified:
+        blockers.insert(2, f"地标“{landmark.name}”尚无物理验证 approach Pose")
+    blocked_reason = "；".join(blockers)
+    return Decision(
+        _envelope(
+            content=(
+                f"已识别导航意图：{landmark.name}；{blocked_reason}；"
+                "未调用 Robonix navigation、Nav2 或 Unitree API"
+            ),
+            description="motion-disabled semantic preview: no capability calls",
+            task_update={
+                "goal": f"{_PREVIEW_GOAL_PREFIX}{landmark.name}",
+                "success_criterion": (
+                    f"阻塞原因：{blocked_reason}；未调用 Robonix navigation、"
+                    "Nav2 或 Unitree API"
+                ),
+                "status": "done",
+            },
+        )
+    )
+
+
+def decide(
+    messages: list[dict[str, Any]],
+    store: LandmarkStore,
+    *,
+    execution_mode: str = "live",
+) -> Decision:
     """Build one fail-closed RTDL response from Pilot history."""
+
+    if _execution_mode(execution_mode) == "preview":
+        return _preview(messages, store)
 
     caps = advertised_capabilities(messages)
     turn = current_turn(messages)
@@ -439,10 +580,19 @@ def decide(messages: list[dict[str, Any]], store: LandmarkStore) -> Decision:
     if latest is not None:
         contract = str(latest.get("contract_id", ""))
         output = _mapping(latest.get("output"))
+        navigation_completion = (
+            _navigation_completion_state(output) if contract == NAV_CONTRACT else ""
+        )
+        provider_terminal = (
+            navigation_completion in _TERMINAL_STATES
+            and terminal is not None
+        )
 
         # Executor/RPC failures are not evidence that an already submitted goal
-        # stopped. If its run id is known, immediately enter the cancel loop.
-        if latest.get("success") is not True:
+        # stopped. A navigate leaf carrying an explicit provider-terminal
+        # snapshot is the exception; it is already measured terminal evidence.
+        # Otherwise, if its run id is known, immediately enter the cancel loop.
+        if latest.get("success") is not True and not provider_terminal:
             candidate = active or prior_active
             if candidate is not None and CANCEL_CAPABILITY in caps:
                 return _cancel(
@@ -455,18 +605,25 @@ def decide(messages: list[dict[str, Any]], store: LandmarkStore) -> Decision:
             )
 
         if contract == NAV_CONTRACT:
-            if output.get("accepted") is True and not _run_id_from_output(output):
+            if navigation_completion:
+                pass
+            elif output.get("accepted") is True and not _run_id_from_output(output):
                 return _hold(
                     "导航可能已接受但未返回可取消的 run_id；请人工接管，系统不会重复下发",
                     landmark.name if landmark is not None else "当前目标",
                 )
-            if output.get("accepted") is not True:
+            elif output.get("accepted") is False:
                 if prior_active is not None and CANCEL_CAPABILITY in caps:
                     return _cancel(prior_active, "新导航未被接受；先安全取消原活动导航")
                 return _terminal(
                     "语义导航明确拒绝了该请求",
                     landmark.name if landmark is not None else "当前目标",
                     success=False,
+                )
+            elif output.get("accepted") is not True:
+                return _hold(
+                    "导航反馈缺少可验证的接受状态或提供方终态；未宣告任务完成",
+                    landmark.name if landmark is not None else "当前目标",
                 )
 
         if contract == STATUS_CONTRACT:
@@ -603,6 +760,7 @@ def decide(messages: list[dict[str, Any]], store: LandmarkStore) -> Decision:
 class Handler(BaseHTTPRequestHandler):
     store: LandmarkStore
     poll_delay_s: float = 2.0
+    execution_mode: str = "preview"
 
     def log_message(self, _format: str, *_args: Any) -> None:
         """Avoid logging utterances, headers, or query payloads."""
@@ -646,7 +804,11 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(messages, list) or not all(isinstance(item, dict) for item in messages):
             self.send_error(400, "messages must be a list")
             return
-        decision = decide(messages, self.store)
+        decision = decide(
+            messages,
+            self.store,
+            execution_mode=self.execution_mode,
+        )
         envelope = decision.envelope
         model = str(request.get("model") or "go2-semantic-router")
         if not request.get("stream", False):
@@ -702,15 +864,21 @@ def build_server(
     landmarks: str | Path,
     *,
     poll_delay_s: float = 2.0,
+    execution_mode: str = "preview",
 ) -> ThreadingHTTPServer:
     address = ipaddress.ip_address(host)
     if not address.is_loopback:
         raise ValueError("semantic intent endpoint must bind to a literal loopback address")
     store = LandmarkStore.from_path(landmarks)
+    selected_mode = _execution_mode(execution_mode)
     handler = type(
         "ConfiguredSemanticIntentHandler",
         (Handler,),
-        {"store": store, "poll_delay_s": poll_delay_s},
+        {
+            "store": store,
+            "poll_delay_s": poll_delay_s,
+            "execution_mode": selected_mode,
+        },
     )
     return ThreadingHTTPServer((host, port), handler)
 
@@ -721,14 +889,25 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=18080)
     parser.add_argument("--landmarks", type=Path, required=True)
     parser.add_argument("--poll-delay-s", type=float, default=2.0)
+    parser.add_argument(
+        "--execution-mode",
+        choices=sorted(_EXECUTION_MODES),
+        default="preview",
+        help="preview emits no capability leaves; live may emit semantic navigation",
+    )
     args = parser.parse_args()
     server = build_server(
         args.host,
         args.port,
         args.landmarks,
         poll_delay_s=args.poll_delay_s,
+        execution_mode=args.execution_mode,
     )
-    print(f"[semantic-intent] listening on http://{args.host}:{args.port}/v1", flush=True)
+    print(
+        f"[semantic-intent] listening on http://{args.host}:{args.port}/v1 "
+        f"mode={args.execution_mode}",
+        flush=True,
+    )
     server.serve_forever()
 
 

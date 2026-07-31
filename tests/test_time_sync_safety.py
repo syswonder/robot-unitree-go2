@@ -21,6 +21,7 @@ sys.path.insert(0, str(TIME_DIR))
 import go2_clock_ref
 import go2_time_core
 import evidence_bundle
+import post_bootstrap_quality_gate
 
 
 def load_script(name: str, filename: str):
@@ -40,10 +41,33 @@ PREFIX = bytes.fromhex("01108f1735154bce5e5fab49")
 ENTITY = bytes.fromhex("00000a03")
 
 
+def gid_for_prefix(prefix: bytes) -> str:
+    return ".".join(f"{value:02x}" for value in prefix + ENTITY + b"\x00" * 8)
+
+
 def rtps_data(prefix: bytes, writer_entity: bytes) -> bytes:
     header = b"RTPS" + b"\x02\x03" + b"\x01\x0f" + prefix
     body = b"\x00\x00" + b"\x10\x00" + b"\x00" * 4 + writer_entity + b"\x00" * 8
     return header + struct.pack("<BBH", 0x15, 0x01, len(body)) + body
+
+
+def rtps_header(prefix: bytes) -> bytes:
+    return b"RTPS" + b"\x02\x03" + b"\x01\x0f" + prefix
+
+
+def rtps_data_submessage(
+    writer_entity: bytes,
+    *,
+    submessage_id: int = 0x15,
+    declared_body_length: int | None = None,
+    captured_body_length: int | None = None,
+) -> bytes:
+    body = b"\x00\x00" + b"\x10\x00" + b"\x00" * 4 + writer_entity + b"\x00" * 32
+    if captured_body_length is not None:
+        body = body[:captured_body_length]
+    if declared_body_length is None:
+        declared_body_length = len(body)
+    return struct.pack("<BBH", submessage_id, 0x01, declared_body_length) + body
 
 
 def ethernet_ipv4_udp(source: str, destination: str, payload: bytes) -> bytes:
@@ -68,37 +92,68 @@ def ethernet_ipv4_udp(source: str, destination: str, payload: bytes) -> bytes:
     return b"\x01\x00\x5e\x7f\x00\x01" + b"\x02\x00\x00\x00\x00\x01" + b"\x08\x00" + ip
 
 
-def write_pcap(path: Path, frames: list[bytes]) -> None:
+def write_pcap(
+    path: Path,
+    frames: list[bytes],
+    capture_lengths: list[int] | None = None,
+) -> None:
     with path.open("wb") as stream:
         stream.write(struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1))
         for index, frame in enumerate(frames, 1):
-            stream.write(struct.pack("<IIII", index, 0, len(frame), len(frame)))
-            stream.write(frame)
+            captured = (
+                frame
+                if capture_lengths is None
+                else frame[: capture_lengths[index - 1]]
+            )
+            stream.write(
+                struct.pack("<IIII", index, 0, len(captured), len(frame))
+            )
+            stream.write(captured)
 
 
 def valid_approval_payload() -> dict:
+    writer = {
+        "topic": "/sportmodestate",
+        "writer_gid": GID,
+        "rtps_participant_guid_prefix": PREFIX.hex(),
+        "source_ip": "192.168.123.161",
+        "correlation_method": go2_clock_ref.EXPECTED_CORRELATION_METHOD,
+        "correlation_conclusion": go2_clock_ref.EXPECTED_CORRELATION_CONCLUSION,
+        "pcap_sha256": "b" * 64,
+        "topic_info_file": "sport_primary.topic-info.txt",
+        "topic_info_sha256": "c" * 64,
+        "correlation_file": "sport_primary.correlation.json",
+        "correlation_sha256": "a" * 64,
+    }
+    trial_prefixes = (
+        PREFIX,
+        bytes.fromhex("02108f1735154bce5e5fab49"),
+        bytes.fromhex("03108f1735154bce5e5fab49"),
+    )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "purpose": "go2-source-clock-to-chrony-refclock",
+        "activation_authorized": False,
         "evidence_bundle": {
             "pcap_file": "go2-rtps.pcap",
             "pcap_sha256": "b" * 64,
         },
-        "approved_writers": [
+        "approved_writers": [writer],
+        "pre_bootstrap_stability": {
+            "minimum_duration_ns": evidence_bundle.MINIMUM_STABILITY_DURATION_NS,
+            "observed_duration_ns": evidence_bundle.MINIMUM_STABILITY_DURATION_NS,
+            "writer_gid": GID,
+        },
+        "cold_boot_identity_trials": [
             {
-                "topic": "/sportmodestate",
-                "writer_gid": GID,
-                "rtps_participant_guid_prefix": PREFIX.hex(),
-                "source_ip": "192.168.123.161",
-                "correlation_method": go2_clock_ref.EXPECTED_CORRELATION_METHOD,
-                "correlation_conclusion": go2_clock_ref.EXPECTED_CORRELATION_CONCLUSION,
-                "pcap_sha256": "b" * 64,
-                "topic_info_file": "sport_primary.topic-info.txt",
-                "topic_info_sha256": "c" * 64,
-                "correlation_file": "sport_primary.correlation.json",
-                "correlation_sha256": "a" * 64,
+                "trial_id": f"cold-boot-{index + 1}",
+                "boot_id": f"00000000-0000-4000-8000-{index + 1:012d}",
+                "writer_gid": gid_for_prefix(prefix),
+                "current_session": index == 0,
             }
+            for index, prefix in enumerate(trial_prefixes)
         ],
+        "post_bootstrap_quality_gate": dict(go2_clock_ref.POST_BOOTSTRAP_POLICY),
     }
 
 
@@ -181,6 +236,73 @@ class TimestampAccountingTest(unittest.TestCase):
 
 
 class RtpsLocatorTest(unittest.TestCase):
+    def test_complete_data_submessage_exposes_writer_entity(self) -> None:
+        payload = rtps_header(PREFIX) + rtps_data_submessage(ENTITY)
+        self.assertEqual(locator._rtps_data_writer_ids(payload), [ENTITY])
+
+    def test_snaplen_truncated_data_still_exposes_captured_writer(self) -> None:
+        payload = rtps_header(PREFIX) + rtps_data_submessage(
+            ENTITY,
+            declared_body_length=512,
+            captured_body_length=12,
+        )
+        self.assertEqual(locator._rtps_data_writer_ids(payload), [ENTITY])
+
+    def test_snaplen_truncated_data_frag_exposes_captured_writer(self) -> None:
+        payload = rtps_header(PREFIX) + rtps_data_submessage(
+            ENTITY,
+            submessage_id=0x16,
+            declared_body_length=512,
+            captured_body_length=12,
+        )
+        self.assertEqual(locator._rtps_data_writer_ids(payload), [ENTITY])
+
+    def test_truncated_pcap_record_correlates_captured_writer(self) -> None:
+        fixed_body = b"\x00\x00" + b"\x10\x00" + b"\x00" * 4 + ENTITY
+        body = fixed_body + b"\x00" * (512 - len(fixed_body))
+        payload = (
+            rtps_header(PREFIX)
+            + struct.pack("<BBH", 0x15, 0x01, len(body))
+            + body
+        )
+        frame = ethernet_ipv4_udp("192.168.123.161", "192.168.123.99", payload)
+        # Ethernet + IPv4 + UDP + RTPS header + submessage header + the fixed
+        # twelve body bytes ending at writerEntityId.
+        captured_length = 14 + 20 + 8 + 20 + 4 + 12
+        with tempfile.TemporaryDirectory() as directory:
+            pcap = Path(directory) / "snaplen.pcap"
+            write_pcap(pcap, [frame], [captured_length])
+            result = locator.correlate(pcap, GID)
+        self.assertEqual(
+            result["conclusion"], "single_source_proven_by_rtps_data_writer"
+        )
+        self.assertEqual(result["proven_source_ips"], ["192.168.123.161"])
+
+    def test_declared_body_too_short_cannot_smuggle_writer_entity(self) -> None:
+        payload = rtps_header(PREFIX) + rtps_data_submessage(
+            ENTITY,
+            declared_body_length=8,
+            captured_body_length=12,
+        )
+        self.assertEqual(locator._rtps_data_writer_ids(payload), [])
+
+    def test_multiple_submessages_reach_later_data_writer(self) -> None:
+        # INFO_TS has an eight-byte body and is followed by a complete DATA.
+        info_ts = struct.pack("<BBH", 0x09, 0x01, 8) + b"\x00" * 8
+        payload = rtps_header(PREFIX) + info_ts + rtps_data_submessage(ENTITY)
+        self.assertEqual(locator._rtps_data_writer_ids(payload), [ENTITY])
+
+    def test_non_initial_ipv4_fragment_is_never_decoded_as_udp_rtps(self) -> None:
+        frame = bytearray(
+            ethernet_ipv4_udp(
+                "192.168.123.161", "192.168.123.99", rtps_data(PREFIX, ENTITY)
+            )
+        )
+        # IPv4 fragment offset one (eight bytes); payload happens to retain a
+        # UDP-looking header but must never be treated as a UDP datagram.
+        frame[14 + 6 : 14 + 8] = struct.pack("!H", 1)
+        self.assertIsNone(locator._udp_datagram(bytes(frame[14:])))
+
     def test_same_session_writer_data_proves_source_ip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pcap = Path(directory) / "sample.pcap"
@@ -218,29 +340,126 @@ class RtpsLocatorTest(unittest.TestCase):
 
 
 class EvidenceBundleTest(unittest.TestCase):
-    def make_bundle(self, directory: Path) -> tuple[Path, dict]:
-        pcap = directory / "go2-rtps.pcap"
+    def make_writer_evidence(
+        self, directory: Path, stem: str, prefix: bytes
+    ) -> tuple[Path, dict]:
+        gid = gid_for_prefix(prefix)
+        pcap = directory / f"{stem}.pcap"
         write_pcap(
             pcap,
             [ethernet_ipv4_udp(
-                "192.168.123.161", "192.168.123.99", rtps_data(PREFIX, ENTITY)
+                "192.168.123.161", "192.168.123.99", rtps_data(prefix, ENTITY)
             )],
         )
-        topic_info = directory / "sport_primary.topic-info.txt"
+        topic_info = directory / f"{stem}.topic-info.txt"
         topic_info.write_text(
-            "Endpoint type: PUBLISHER\nGID: " + GID + "\n",
+            "Endpoint type: PUBLISHER\nGID: " + gid + "\n",
             encoding="utf-8",
         )
-        correlation_path = directory / "sport_primary.correlation.json"
-        correlation = locator.correlate(pcap, GID)
-        correlation_path.write_text(json.dumps(correlation), encoding="utf-8")
+        correlation_path = directory / f"{stem}.correlation.json"
+        correlation_path.write_text(
+            json.dumps(locator.correlate(pcap, gid)), encoding="utf-8"
+        )
         for path in (pcap, topic_info, correlation_path):
             path.chmod(0o600)
         writer = approval_tool.approved_writer(
             "/sportmodestate", topic_info, correlation_path, pcap
         )
+        return pcap, writer
+
+    def make_bundle(self, directory: Path) -> tuple[Path, dict]:
+        pcap, writer = self.make_writer_evidence(directory, "go2-rtps", PREFIX)
+
+        started_realtime_ns = 1_700_000_000_000_000_000
+        stability_metadata = {
+            "mode": "read-only-no-adjust",
+            "clock_adjustment_requested": False,
+            "ros_publishers_created": False,
+            "unitree_clients_created": False,
+            "duration_seconds": 7200,
+            "started_realtime_ns": started_realtime_ns,
+            "topics": dict(evidence_bundle.STABILITY_REQUIRED_STREAMS),
+        }
+        stability_streams = []
+        for stream_name, topic in evidence_bundle.STABILITY_REQUIRED_STREAMS:
+            stability_streams.append(
+                {
+                    "stream": stream_name,
+                    "topic": topic,
+                    "received": 10_000,
+                    "valid": 10_000,
+                    "duplicates": 0,
+                    "zero": 0,
+                    "malformed": 0,
+                    "regressions": 0,
+                    "offset_jitter_abs_deviation_p95_ns": 1_000_000,
+                    "estimated_drift_ppm": 5.0,
+                }
+            )
+        stability_summary = {
+            "mode": "read-only-no-adjust",
+            "elapsed_monotonic_ns": evidence_bundle.MINIMUM_STABILITY_DURATION_NS,
+            "exit_reason": "duration_elapsed",
+            "cleanup_errors": [],
+            "started_realtime_ns": started_realtime_ns,
+            "streams": stability_streams,
+        }
+        metadata_path = directory / "stability-metadata.json"
+        summary_path = directory / "stability-summary.json"
+        metadata_path.write_text(json.dumps(stability_metadata), encoding="utf-8")
+        summary_path.write_text(json.dumps(stability_summary), encoding="utf-8")
+        metadata_path.chmod(0o600)
+        summary_path.chmod(0o600)
+        stability = {
+            "metadata_file": metadata_path.name,
+            "metadata_sha256": evidence_bundle.sha256_file(metadata_path),
+            "summary_file": summary_path.name,
+            "summary_sha256": evidence_bundle.sha256_file(summary_path),
+            "minimum_duration_ns": evidence_bundle.MINIMUM_STABILITY_DURATION_NS,
+            "observed_duration_ns": evidence_bundle.MINIMUM_STABILITY_DURATION_NS,
+            "writer_gid": writer["writer_gid"],
+            "maximum_jitter_p95_ns": evidence_bundle.STABILITY_MAX_JITTER_P95_NS,
+            "maximum_absolute_drift_ppm": (
+                evidence_bundle.STABILITY_MAX_ABSOLUTE_DRIFT_PPM
+            ),
+            "maximum_duplicate_fraction": (
+                evidence_bundle.STABILITY_MAX_DUPLICATE_FRACTION
+            ),
+        }
+
+        trial_prefixes = (
+            PREFIX,
+            bytes.fromhex("02108f1735154bce5e5fab49"),
+            bytes.fromhex("03108f1735154bce5e5fab49"),
+        )
+        trials = []
+        for index, prefix in enumerate(trial_prefixes, 1):
+            if index == 1:
+                trial_pcap, trial_writer = pcap, writer
+            else:
+                trial_pcap, trial_writer = self.make_writer_evidence(
+                    directory, f"cold-boot-{index}", prefix
+                )
+            boot_id = f"00000000-0000-4000-8000-{index:012d}"
+            boot_id_path = directory / f"cold-boot-{index}.boot-id.txt"
+            boot_id_path.write_text(boot_id + "\n", encoding="utf-8")
+            boot_id_path.chmod(0o600)
+            trials.append(
+                {
+                    "trial_id": f"cold-boot-{index}",
+                    "operator_attestation": (
+                        "physical-cold-boot-observed-and-read-only"
+                    ),
+                    "current_session": index == 1,
+                    "boot_id_file": boot_id_path.name,
+                    "boot_id_sha256": evidence_bundle.sha256_file(boot_id_path),
+                    "boot_id": boot_id,
+                    "pcap_file": trial_pcap.name,
+                    **trial_writer,
+                }
+            )
         payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "purpose": "go2-source-clock-to-chrony-refclock",
             "activation_authorized": False,
             "evidence_bundle": {
@@ -248,6 +467,9 @@ class EvidenceBundleTest(unittest.TestCase):
                 "pcap_sha256": evidence_bundle.sha256_file(pcap),
             },
             "approved_writers": [writer],
+            "pre_bootstrap_stability": stability,
+            "cold_boot_identity_trials": trials,
+            "post_bootstrap_quality_gate": evidence_bundle.post_bootstrap_policy(),
         }
         approval = directory / "go2-clock-ref-approval.json"
         approval.write_text(json.dumps(payload), encoding="utf-8")
@@ -261,6 +483,44 @@ class EvidenceBundleTest(unittest.TestCase):
             verified = evidence_bundle.verify_bundle(bundle)
             self.assertEqual(
                 verified["approved_writers"][0]["source_ip"], "192.168.123.161"
+            )
+
+    def test_preparation_cli_emits_a_verified_schema_v3_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            approval, payload = self.make_bundle(bundle)
+            approval.unlink()
+            writer = payload["approved_writers"][0]
+            arguments = [
+                "--pcap",
+                str(bundle / payload["evidence_bundle"]["pcap_file"]),
+                "--topic-info",
+                f'/sportmodestate={bundle / writer["topic_info_file"]}',
+                "--topic-correlation",
+                f'/sportmodestate={bundle / writer["correlation_file"]}',
+                "--stability-metadata",
+                str(bundle / payload["pre_bootstrap_stability"]["metadata_file"]),
+                "--stability-summary",
+                str(bundle / payload["pre_bootstrap_stability"]["summary_file"]),
+            ]
+            for trial in payload["cold_boot_identity_trials"]:
+                trial_value = ",".join(
+                    (
+                        trial["trial_id"],
+                        "true" if trial["current_session"] else "false",
+                        trial["operator_attestation"],
+                        str(bundle / trial["boot_id_file"]),
+                        str(bundle / trial["pcap_file"]),
+                        str(bundle / trial["topic_info_file"]),
+                        str(bundle / trial["correlation_file"]),
+                    )
+                )
+                arguments.extend(("--cold-boot-trial", trial_value))
+            arguments.extend(("--output", str(approval)))
+
+            self.assertEqual(approval_tool.main(arguments), 0)
+            self.assertEqual(
+                evidence_bundle.verify_bundle(bundle)["schema_version"], 3
             )
 
     def test_fake_digest_and_tampered_pcap_are_rejected(self) -> None:
@@ -277,7 +537,7 @@ class EvidenceBundleTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             bundle = Path(temporary)
             approval, payload = self.make_bundle(bundle)
-            correlation_path = bundle / "sport_primary.correlation.json"
+            correlation_path = bundle / "go2-rtps.correlation.json"
             correlation = json.loads(correlation_path.read_text(encoding="utf-8"))
             correlation["proven_source_ips"] = ["192.168.123.77"]
             correlation["writer_data_sources"] = {"192.168.123.77": 1}
@@ -296,8 +556,59 @@ class EvidenceBundleTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             bundle = Path(temporary)
             self.make_bundle(bundle)
-            (bundle / "sport_primary.correlation.json").unlink()
+            (bundle / "go2-rtps.correlation.json").unlink()
             with self.assertRaises(OSError):
+                evidence_bundle.verify_bundle(bundle)
+
+    def test_schema_v2_and_incomplete_evidence_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            approval, payload = self.make_bundle(bundle)
+            payload["schema_version"] = 2
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            approval.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "schema_version=3 required"):
+                evidence_bundle.verify_bundle(bundle)
+
+    def test_short_stability_and_two_cold_boot_trials_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            approval, payload = self.make_bundle(bundle)
+            summary_path = bundle / "stability-summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["elapsed_monotonic_ns"] -= 1
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+            summary_path.chmod(0o600)
+            payload["pre_bootstrap_stability"]["summary_sha256"] = (
+                evidence_bundle.sha256_file(summary_path)
+            )
+            payload["pre_bootstrap_stability"]["observed_duration_ns"] -= 1
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            approval.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "shorter than two hours"):
+                evidence_bundle.verify_bundle(bundle)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            approval, payload = self.make_bundle(bundle)
+            payload["cold_boot_identity_trials"] = payload[
+                "cold_boot_identity_trials"
+            ][:2]
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            approval.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "at least three"):
+                evidence_bundle.verify_bundle(bundle)
+
+    def test_post_bootstrap_policy_cannot_be_weakened(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            approval, payload = self.make_bundle(bundle)
+            payload["post_bootstrap_quality_gate"][
+                "maximum_absolute_offset_ns_exclusive"
+            ] += 1
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            approval.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "exactly match"):
                 evidence_bundle.verify_bundle(bundle)
 
 
@@ -331,8 +642,28 @@ class RefclockGateTest(unittest.TestCase):
 
     def test_legacy_self_asserted_approval_is_rejected(self) -> None:
         payload = valid_approval_payload()
-        payload["schema_version"] = 1
+        payload["schema_version"] = 2
         with self.assertRaises(ValueError):
+            go2_clock_ref.validate_approval_payload(payload)
+
+    def test_approval_requires_all_formal_time_gates(self) -> None:
+        payload = valid_approval_payload()
+        payload["cold_boot_identity_trials"] = payload[
+            "cold_boot_identity_trials"
+        ][:2]
+        with self.assertRaisesRegex(ValueError, "three verified cold-boot"):
+            go2_clock_ref.validate_approval_payload(payload)
+
+        payload = valid_approval_payload()
+        payload["pre_bootstrap_stability"]["observed_duration_ns"] -= 1
+        with self.assertRaisesRegex(ValueError, "two-hour stability"):
+            go2_clock_ref.validate_approval_payload(payload)
+
+        payload = valid_approval_payload()
+        payload["post_bootstrap_quality_gate"][
+            "maximum_absolute_drift_ppm_exclusive"
+        ] = 100.1
+        with self.assertRaisesRegex(ValueError, "policy is not exact"):
             go2_clock_ref.validate_approval_payload(payload)
 
     def test_approval_rejects_nx_as_publisher_source(self) -> None:
@@ -368,6 +699,62 @@ class RefclockGateTest(unittest.TestCase):
         self.assertGreater(arguments.duration_seconds, 0)
 
 
+class PostBootstrapQualityGateTest(unittest.TestCase):
+    @staticmethod
+    def health(now_ns: int, feed_count: int, offset_ns: int) -> dict:
+        return {
+            "unsafe_latched": False,
+            "required_topics": ["/sportmodestate"],
+            "authorized_topics": ["/sportmodestate"],
+            "updated_monotonic_ns": now_ns,
+            "last_valid_sample_monotonic_ns": now_ns,
+            "feed_count": feed_count,
+            "stream_quality": {
+                "/sportmodestate": {
+                    "last_source_minus_local_ns": offset_ns,
+                }
+            },
+        }
+
+    def test_continuous_window_passes_only_after_duration(self) -> None:
+        policy = dict(post_bootstrap_quality_gate.EXPECTED_POLICY)
+        policy["minimum_continuous_duration_ns"] = 3_000_000_000
+        gate = post_bootstrap_quality_gate.QualityGate(policy)
+        states = []
+        for index in range(1, 5):
+            now_ns = index * 1_000_000_000
+            states.append(
+                gate.observe(self.health(now_ns, index, index * 10), now_ns)
+            )
+        self.assertEqual(states, ["qualifying", "qualifying", "qualifying", "passed"])
+        self.assertEqual(gate.passed_metrics["continuous_duration_ns"], 3_000_000_000)
+        self.assertLess(abs(gate.passed_metrics["robust_drift_ppm"]), 100.0)
+
+    def test_offset_limit_is_strict_and_resets_window(self) -> None:
+        policy = dict(post_bootstrap_quality_gate.EXPECTED_POLICY)
+        gate = post_bootstrap_quality_gate.QualityGate(policy)
+        now_ns = 1_000_000_000
+        state = gate.observe(
+            self.health(now_ns, 1, policy["maximum_absolute_offset_ns_exclusive"]),
+            now_ns,
+        )
+        self.assertEqual(state, "qualifying")
+        self.assertEqual(gate.last_failure, "offset_out_of_bounds")
+        self.assertEqual(list(gate.samples), [])
+
+    def test_approval_policy_is_exact(self) -> None:
+        payload = valid_approval_payload()
+        self.assertEqual(
+            post_bootstrap_quality_gate.policy_from_approval(payload),
+            post_bootstrap_quality_gate.EXPECTED_POLICY,
+        )
+        payload["post_bootstrap_quality_gate"][
+            "minimum_continuous_duration_ns"
+        ] -= 1
+        with self.assertRaisesRegex(ValueError, "policy is not exact"):
+            post_bootstrap_quality_gate.policy_from_approval(payload)
+
+
 class StaticSafetyTest(unittest.TestCase):
     def test_subscription_tools_have_no_publish_or_clock_setter(self) -> None:
         paths = [
@@ -388,11 +775,25 @@ class StaticSafetyTest(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             for token in forbidden:
                 self.assertNotIn(token, source, f"{token} in {path}")
-            self.assertIn("create_subscription", source)
 
+        refclock_source = paths[0].read_text(encoding="utf-8")
+        self.assertIn("create_subscription", refclock_source)
         probe_source = paths[1].read_text(encoding="utf-8")
-        self.assertIn("self._subscriptions = [", probe_source)
-        self.assertNotIn("self.subscriptions = [", probe_source)
+        self.assertIn("_rclpy.Node(", probe_source)
+        self.assertIn("_rclpy.Subscription(", probe_source)
+        self.assertIn(
+            "_rclpy.WaitSet(5, 0, 0, 0, 0, 0, context.handle)",
+            probe_source,
+        )
+        self.assertIn("initialize_logging=False", probe_source)
+        self.assertIn('"ros_publishers_created": False', probe_source)
+        for forbidden_high_level in (
+            "from rclpy.node import Node",
+            ".create_subscription(",
+            "rclpy.spin_once(",
+            "ReadOnlyTimeProbe(",
+        ):
+            self.assertNotIn(forbidden_high_level, probe_source)
 
         wrapper_source = (ROOT / "scripts" / "probe_go2_time_readonly.sh").read_text(
             encoding="utf-8"
@@ -412,6 +813,21 @@ class StaticSafetyTest(unittest.TestCase):
         self.assertIn("ros2 topic info --no-daemon --verbose", source)
         self.assertNotIn("ros2 topic pub", source)
         self.assertIn("ros_topic_info_provides_ip=false", source)
+
+    def test_locator_sudo_mode_privileges_only_tcpdump_and_closes_startup_race(self) -> None:
+        source = (
+            ROOT / "scripts" / "collect_go2_publisher_locators_readonly.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SUDO_NONINTERACTIVE", source)
+        self.assertIn("PKEXEC", source)
+        self.assertIn("tcpdump_command=(sudo -n -- tcpdump)", source)
+        self.assertIn("if (( EUID == 0 )); then", source)
+        self.assertIn('capture_ready=false', source)
+        self.assertLess(
+            source.index('if [[ "${capture_ready}" != true ]]'),
+            source.index('ros2 topic echo "${topic}" --no-daemon'),
+        )
+        self.assertNotIn("sudo -S", source)
 
     def test_sidecar_runtime_is_minimal_and_probe_has_no_sys_time(self) -> None:
         run = (ROOT / "deploy" / "jetson-time-sync" / "run.sh").read_text(
