@@ -56,7 +56,7 @@ deskew until usable PointCloud2 per-point timestamps have been measured.
 
 ## Gate 4 — enable transport, still disarmed
 
-Set all four local environment values. `GO2_ALLOWED_MODES` must contain only
+Set the local environment values below. `GO2_ALLOWED_MODES` must contain only
 the decimal `SportModeState.mode` value(s) observed while this exact robot was
 stationary during the read-only audit; never copy or guess another robot's
 values:
@@ -66,15 +66,25 @@ GO2_ALLOW_MOTION=true
 GO2_OPERATOR_PRESENT=true
 GO2_SAFETY_ACK=I_UNDERSTAND_GO2_CAN_MOVE
 GO2_ALLOWED_MODES=<audited comma-separated values>
+# Normally empty. If the current error_code is non-zero, this must contain
+# only the exact robot/firmware value explicitly approved for this session.
+GO2_ALLOWED_STATE_MARKERS=<empty-or-audited-decimal-values>
 ```
 
-An allowed mode is necessary but not sufficient: the chassis adapter also
-requires `SportModeState.error_code == 0`. The current EDU captures returned
-undocumented non-zero values (`100`/`1001`), so Gate 4 remains blocked. Do not
-weaken that check. Resolve it through Unitree/vendor confirmation or a separate
-approved, stationary, single-service `sport_mode` experiment with the remote
-operator present; topic existence and an App colour are not proof that the
-Sport API is healthy.
+An allowed mode is necessary but not sufficient. Zero remains the only
+`SportModeState.error_code` accepted by default. The exceptional
+`GO2_ALLOWED_STATE_MARKERS` input gives an undocumented non-zero value no
+meaning beyond “this exact opaque firmware marker was reviewed for this
+session”; it is not a mode, health proof, or RPC acknowledgement. Any marker
+change always blocks and latches a motion-capable profile closed, requiring an
+explicit disarm acknowledgement followed by a new arm. A dedicated
+motion-disabled `external_verified` manual-mapping manifest may separately opt
+in to transitions wholly inside an explicit set of at least two reviewed
+markers; that exception is rejected whenever `allow_motion=true` and does not
+bypass freshness, measurement, odometry, TF, or continuity gates. A value not
+already in the operator-provided allowlist requires a reviewed restart with
+updated configuration. Never copy another robot's values or infer meaning from
+an App colour.
 
 The dedicated Go2 NIC must remain a point-to-point trusted link with exactly
 `192.168.123.99/24`, no other IPv4 address, IPv6 disabled, no gateway or DNS,

@@ -29,14 +29,14 @@ names, types, QoS, rates and frame IDs. In particular verify:
 
 Do not run any Unitree example program. Do not run `ros2 topic pub`.
 
-For this EDU firmware, the measured `SportModeState.error_code` values `100`
-(standing) and `1001` (lying) are **not documented in Unitree's public message
-or SDK error tables**. They must remain unknown and fail closed; do not add
-either number to a healthy whitelist. Unitree does document `mode=0` as the
-default standing mode, `mode=3` as locomotion, `mode=5` as lie-down and
-`mode=7` as damping, but the observed dog reported `mode=0` in both standing
-and lying captures. Therefore mode alone is not a control-health proof on this
-firmware.
+For this EDU firmware, measured `SportModeState.error_code` values including
+`100`, `1013`, and `2010` are **not documented in Unitree's public message or
+SDK error tables**. Never label them as modes or healthy states. Zero is the
+default-safe value. A reviewed robot-specific value may only be configured as
+an opaque compatibility marker through `GO2_ALLOWED_STATE_MARKERS`; any later
+change latches canonical state and motion closed. The observed dog also
+reported `mode=0` across remote state changes, so mode alone is not a
+control-health proof on this firmware.
 
 The current hardware baseline is Go2 EDU hardware V2.0, system software
 V1.1.11, and Unitree lidar software 1.0.0.38.  The App currently offers

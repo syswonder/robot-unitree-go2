@@ -79,6 +79,10 @@ ratio. The NX container health check independently enforces the same live
 diagnostic, so persistent vendor API codes (including the observed SDK
 ``Call api timeout error`` code 3104), corrupt JPEGs, low FPS, or disconnects
 make the runtime unhealthy.
+The strict full-stack readiness report also requires the Dashboard's current
+camera diagnostic to have `ready=true`, `healthy=true`, and level OK; a WARN or
+ERROR window therefore cannot be reported as a camera/dashboard PASS merely
+because the last ROS Image is still fresh.
 
 ## Runtime placement and publisher ownership
 

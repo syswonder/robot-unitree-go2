@@ -4,21 +4,21 @@ This repository adapts a Unitree Go2 to Robonix and Nav2 using only the
 high-level Unitree Sport service. It standardizes chassis odometry, IMU,
 onboard lidar and video; supplies the Go2 model/TF tree; configures RTAB-Map
 and Nav2; maps Chinese semantic landmark names to verified map poses; and
-provides a read-only browser dashboard.
+provides loopback-only Client, Scene, Mapping and dashboard operator pages.
 
 All non-DDS control/capability/audio/dashboard listeners are loopback-only.
-The Scene debug UI and Mapping administration UI are disabled; remote viewing
-uses an authenticated SSH tunnel.
+Scene and Mapping administration remain unavailable on public interfaces;
+remote viewing uses an authenticated SSH tunnel.
 
-The first supported task is:
+The supported semantic task shape is:
 
-> “走到前面自动售货机那里”
+> “请带我去<已验证地标>” / “请带我回到地图起点”
 
 The production path is:
 
 ```text
 Chinese speech -> Robonix ASR/Liaison/Pilot
--> semantic_navigation.navigate_landmark("自动售货机")
+-> semantic_navigation.navigate_landmark("<verified landmark>")
 -> verified pose in the active saved map
 -> Robonix navigation service -> Nav2 NavigateToPose
 -> guarded /cmd_vel -> Go2 chassis adapter -> Unitree SportClient
@@ -28,6 +28,12 @@ Motion is **off by default** and boot never arms the chassis. No posture or
 low-level motor API is implemented. Read [docs/SAFETY.md](docs/SAFETY.md)
 before connecting hardware.
 
+On 2026-07-31, the supervised reference deployment completed a real Chinese
+Client voice request to a long-distance mapped target and a Client-dispatched
+autonomous return. Stop, cancel, watchdog and remote takeover remained in the
+control path. See the
+[supervised full-stack validation note](docs/reports/2026-07-31/README.md).
+
 Publisher ownership is explicit. `GO2_RUNTIME_PLACEMENT=workstation-local`
 keeps the existing all-on-workstation behavior. The reviewed split profiles
 are `workstation-full-nx-sensors` (NX runs `--sensors-only --camera`) and
@@ -35,6 +41,16 @@ are `workstation-full-nx-sensors` (NX runs `--sensors-only --camera`) and
 while the workstation starts only the telemetry UI). Every start performs a
 bounded, read-only publisher-count preflight for camera, lidar/IMU, odometry
 and `/tf_static`; a missing or duplicate owner stops startup.
+
+An additional default-disabled
+`workstation-full-nomotion-corrected` commissioning profile can qualify one
+reviewed fixed source-clock offset and expose only private corrected state,
+MID-360 IMU/cloud and lidar-odometry copies. It cannot authorize motion,
+cannot satisfy canonical chassis `/odom`, and is not a navigation acceptance
+result. A local generator derives the offset and four exact writer GIDs from
+same-session read-only evidence; a long-lived graph monitor keeps those GIDs
+bound throughout the run. See
+[the no-motion timestamp correction contract](docs/WORKSTATION_NOMOTION_TIMESTAMP_CORRECTION.md).
 
 ## Clone and inspect safely
 
@@ -94,8 +110,9 @@ names/QoS/frames, measure sensor extrinsics, create/load the laboratory map,
 and save a verified approach pose in
 `config/semantic_landmarks.local.yaml`, including the exact `(map_id,
 generation)` from the mapping lifecycle while it is in localization mode.
-Until those checks pass, semantic navigation rejects the target and motion
-remains disarmed.
+Until those checks pass on a particular deployment, semantic navigation rejects
+the target and motion remains disarmed. Passing them on the supervised reference
+Go2 does not authorize another robot or site automatically.
 
 See [docs/HARDWARE_CHECKLIST.md](docs/HARDWARE_CHECKLIST.md) for the exact
 operator steps and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for build/start

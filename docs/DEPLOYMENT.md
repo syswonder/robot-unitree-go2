@@ -11,9 +11,10 @@
   Unitree ROS 2 message packages in addition to ROS's default generators.
 - Robonix `rbnx`, Python build dependencies, Unitree ROS 2 messages and
   Unitree SDK2.
-- Rust/Cargo for the Robonix contract generator. `build.sh` compiles
-  `robonix-codegen` incrementally from the same audited Robonix checkout and
-  passes its exact workspace-local path to `rbnx`.
+- Rust/Cargo for the Robonix contract generator and Rust system processes.
+  `build.sh` compiles `robonix-codegen` plus every Rust system selected by the
+  manifest (Atlas, Executor, Pilot, Liaison and Soma; Vitals when configured)
+  from the same audited Robonix checkout.
 - Python `grpcio-tools` for generated gRPC stubs. The workspace-local
   `.tools/rbnx-python` environment is preferred when present; global user-home
   installation is not required.
@@ -36,6 +37,11 @@ cp .env.example .env
 
 Edit `.env` locally. At minimum set the real `GO2_NETWORK_INTERFACE`, map ID
 and Pilot endpoint. Keep `GO2_ALLOW_MOTION=false` through all read-only tests.
+In that mode, `build.sh` and `start.sh` forcibly route Navigation output to
+`/robonix/nomotion/cmd_vel`; the value cannot be overridden from `.env`.
+Canonical `/cmd_vel` is selected only after the complete motion gate is
+valid. Build/start also reject any retained rbnx Navigation cache that lacks
+this configurable-output contract.
 Keep `GO2_RUNTIME_PLACEMENT=workstation-local` unless intentionally using one
 of the two split profiles below. The value is an ownership declaration, not a
 preference: startup never auto-selects or falls back to another publisher.
@@ -84,7 +90,29 @@ Both build and runtime force `ROBONIX_HOME` to the workspace-local
 `.tools/robonix-home`. The config must exist and its `robonix_source_path`
 must resolve to the existing audited `upstream/robonix-go2-build` checkout;
 there is no `~/.robonix` fallback. The local `.tools/rbnx/bin` is used when
-`rbnx` is absent from `PATH`.
+`rbnx` is absent from `PATH`. Runtime also prefers the workspace-local
+`.tools/rbnx-python/bin/python3` and verifies that it can import `grpc` before
+Soma starts any Python primitive. This keeps provider registration independent
+of user-site or system-wide Python packages.
+
+Robonix Rust state is equally workspace-owned. `CARGO_HOME` is fixed to
+`.tools/cargo`, `RUSTUP_HOME` to `.tools/rustup`, and `CARGO_TARGET_DIR` to
+`.tools/cargo-target/robonix`; inherited or `.env` values cannot redirect a
+build into the user home or a system directory. `ROBONIX_BUILD_PROFILE`
+accepts only `debug` (default) or `release`. Use the same value for build and
+start, for example:
+
+```bash
+ROBONIX_BUILD_PROFILE=release ./build.sh
+ROBONIX_BUILD_PROFILE=release ./start.sh
+```
+
+Before a full Robonix boot, `start.sh` prepends only the selected
+`<CARGO_TARGET_DIR>/<profile>` directory to `PATH` and verifies every
+manifest-selected system executable resolves back to that exact directory.
+Missing, non-executable, redirected, or wrong-profile artifacts fail before
+ROS/DDS/network preflight. The UI-client-only placement skips this gate because
+it intentionally does not boot any Robonix system process.
 
 Chinese ASR is also offline and fail closed. `start.sh` pins the ModelScope
 cache and credentials path below this deployment's ignored `.cache/modelscope`
@@ -276,3 +304,10 @@ when safe, but never prevents the independent Robonix shutdown path.
 The semantic-intent endpoint has a separate atomic lease; shutdown validates
 both launcher and child PID start-time plus ownership of that exact lock before
 signalling the child. It never searches process command lines or kills by name.
+
+The full launcher also refuses to overwrite a pre-existing
+`rbnx-boot/state.json`. If its own `rbnx boot` child terminates but leaves that
+file behind, cleanup verifies both the canonical manifest path and the exact
+recorded boot PID before invoking the same selected binary as
+`rbnx shutdown -f <manifest>`. A malformed, symlinked, foreign-manifest or
+foreign-PID state is retained for inspection and no process is signalled.
