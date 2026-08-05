@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import sys
 import tempfile
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 
 import yaml
@@ -160,12 +162,33 @@ class DescriptionRuntimeTests(unittest.TestCase):
         self.assertEqual(sentinel.missing, frozenset())
 
     def test_static_transform_qos_is_reliable_and_transient_local(self) -> None:
-        from rclpy.qos import DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
+        class FakeQoSProfile:
+            def __init__(self, *, reliability, durability, history, depth) -> None:
+                self.reliability = reliability
+                self.durability = durability
+                self.history = history
+                self.depth = depth
 
-        qos = static_transform_qos_profile()
-        self.assertEqual(qos.reliability, ReliabilityPolicy.RELIABLE)
-        self.assertEqual(qos.durability, DurabilityPolicy.TRANSIENT_LOCAL)
-        self.assertEqual(qos.history, HistoryPolicy.KEEP_LAST)
+        reliability = SimpleNamespace(RELIABLE=object())
+        durability = SimpleNamespace(TRANSIENT_LOCAL=object())
+        history = SimpleNamespace(KEEP_LAST=object())
+        qos_module = ModuleType("rclpy.qos")
+        qos_module.QoSProfile = FakeQoSProfile
+        qos_module.ReliabilityPolicy = reliability
+        qos_module.DurabilityPolicy = durability
+        qos_module.HistoryPolicy = history
+        rclpy_module = ModuleType("rclpy")
+        rclpy_module.qos = qos_module
+
+        with mock.patch.dict(
+            sys.modules,
+            {"rclpy": rclpy_module, "rclpy.qos": qos_module},
+        ):
+            qos = static_transform_qos_profile()
+
+        self.assertIs(qos.reliability, reliability.RELIABLE)
+        self.assertIs(qos.durability, durability.TRANSIENT_LOCAL)
+        self.assertIs(qos.history, history.KEEP_LAST)
         self.assertEqual(qos.depth, 1)
 
     def test_exact_pinned_model_is_required(self) -> None:
