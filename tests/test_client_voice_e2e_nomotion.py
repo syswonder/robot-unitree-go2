@@ -10,7 +10,9 @@ from pathlib import Path
 import struct
 import sys
 import tempfile
+from types import ModuleType
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +26,12 @@ def load_module():
         raise RuntimeError(f"cannot import {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    if importlib.util.find_spec("websockets") is None:
+        websocket_stub = ModuleType("websockets")
+        with mock.patch.dict(sys.modules, {"websockets": websocket_stub}):
+            spec.loader.exec_module(module)
+    else:
+        spec.loader.exec_module(module)
     return module
 
 

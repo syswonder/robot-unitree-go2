@@ -237,6 +237,10 @@ class CanonicalOdomStationaryMathTest(unittest.TestCase):
 
 
 class CanonicalOdomStationaryContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        (ROOT / "logs").mkdir(parents=True, exist_ok=True)
+
     def arguments(self, duration_seconds: int = 1):
         return observer.build_argument_parser().parse_args(
             [

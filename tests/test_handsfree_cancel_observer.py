@@ -38,6 +38,7 @@ observer = load_observer()
 class HandsfreeCancelSafetyContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        (ROOT / "logs").mkdir(parents=True, exist_ok=True)
         cls.source = OBSERVER_PATH.read_text(encoding="utf-8")
         cls.tree = ast.parse(cls.source, filename=str(OBSERVER_PATH))
 
@@ -747,6 +748,10 @@ class HandsfreeCancelClassificationTest(unittest.TestCase):
 
 
 class HandsfreeCancelBoundsAndEvidenceTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        (ROOT / "logs").mkdir(parents=True, exist_ok=True)
+
     def _parse_raises(self, arguments: list[str]) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             observer.build_argument_parser().parse_args(arguments)
