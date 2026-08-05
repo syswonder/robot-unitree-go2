@@ -26,3 +26,26 @@ precedence over convenience.
     `packages/go2_description/`.
 12. Hardware-dependent dimensions, frame transforms, QoS, topic names and
     modes must be measured and recorded before supervised motion acceptance.
+
+## Current validated phase (2026-07-31)
+
+Supervised wireless motion, StopMove, human takeover, generation-1
+Mapping/localization, and real Client Chinese-voice long-distance outbound and
+autonomous-return Nav2 runs have succeeded. The operator retained video of the
+successful physical round trip and accepted the small final placement
+deviation as non-blocking. A fresh conversation may resume the existing
+persistent stack without repeating a no-motion-only or centimeter-scale stage,
+and it must not create new permit bundles or approval artifacts merely because
+the conversation is new.
+
+The local and global Nav2 costmaps consume the live MID-360-derived 2D scan and
+have obstacle and inflation layers enabled. This proves that the laser obstacle
+chain was active during physical navigation; it does not claim a dedicated
+placed-obstacle avoidance trial. D435i remains a read-only preview source and
+is not a Nav2 costmap input.
+
+The implementation is not restricted to upstream-only code. The local dirty
+integration and the supplied same-Go2 ROS1 archive are valid adaptation
+references. Keep the existing disarmed-at-start behavior and the working
+stop/cancel/watchdog/single-owner path; avoid adding new hard gates unless they
+address a reproduced failure.

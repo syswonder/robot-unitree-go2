@@ -135,6 +135,17 @@ mkdir -p logs/go2-readonly/ssh
 timeout --signal=INT --kill-after=2s 10s ssh -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=ask -o UserKnownHostsFile="$PWD/logs/go2-readonly/ssh/known_hosts" "$ONBOARD_USER@$ONBOARD_IP" 'uname -a; ip -br addr; uptime'
 ```
 
+After the operator confirms the account and host fingerprint and public-key
+authentication succeeds, stream the repository's bounded audit script over
+standard input. The script is not installed on the onboard computer and does
+not use `sudo`, change time/network/services, inspect credentials, or include
+process arguments:
+
+```bash
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+timeout --signal=INT --kill-after=2s 180s ssh -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o UserKnownHostsFile="$PWD/logs/go2-readonly/ssh/known_hosts" "$ONBOARD_USER@$ONBOARD_IP" 'bash -s' < scripts/audit_nx_readonly.sh > "logs/go2-readonly/ssh/${STAMP}-nx-audit.txt"
+```
+
 If interactive password authentication is the only option, the operator must
 enter it directly in their own terminal after approving the connection. It
 must never be copied into chat, `.env`, logs or this repository.

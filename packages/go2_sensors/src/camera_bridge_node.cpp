@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -26,8 +27,10 @@
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "diagnostic_msgs/msg/key_value.hpp"
+#include "go2_sensors/camera_error_watermark.hpp"
 #include "go2_sensors/camera_ipc_protocol.hpp"
-#include "opencv2/imgcodecs.hpp"
+#include "go2_sensors/latest_frame_mailbox.hpp"
+#include "go2_sensors/strict_jpeg_decoder.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/image_encodings.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
@@ -53,11 +56,50 @@ struct CameraRuntimeState
   std::uint64_t received{0U};
   std::uint64_t published{0U};
   std::uint64_t rejected{0U};
-  std::uint64_t previous_published{0U};
+  std::uint64_t superseded{0U};
+  std::uint64_t status_records{0U};
+  std::uint64_t connection_attempts{0U};
+  std::uint64_t connection_failures{0U};
+  std::uint64_t connections{0U};
+  std::uint64_t reconnects{0U};
+  std::uint64_t disconnects{0U};
+  std::uint64_t daemon_api_requests{0U};
+  std::uint64_t daemon_api_accepted{0U};
+  std::uint64_t daemon_source_rejected{0U};
+  std::uint64_t daemon_api_errors{0U};
+  std::uint64_t daemon_ipc_connections{0U};
+  std::uint64_t daemon_ipc_disconnects{0U};
+  std::uint64_t daemon_counter_resets{0U};
+  std::uint64_t daemon_epoch{0U};
+  std::int32_t daemon_last_api_code{0};
   double rate_hz{0.0};
-  std::string last_error{"camera daemon not connected"};
+  CameraErrorWatermark last_error{"camera daemon not connected"};
   std::chrono::steady_clock::time_point last_published{};
-  std::chrono::steady_clock::time_point previous_sample{std::chrono::steady_clock::now()};
+  std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
+};
+
+struct CameraQualitySample
+{
+  std::chrono::steady_clock::time_point stamp{};
+  std::uint64_t daemon_api_requests{0U};
+  std::uint64_t daemon_api_errors{0U};
+  std::uint64_t daemon_source_rejected{0U};
+  std::uint64_t bridge_rejected{0U};
+  std::uint64_t published{0U};
+  std::uint64_t disconnects{0U};
+  std::uint64_t daemon_epoch{0U};
+};
+
+struct CameraQualityMetrics
+{
+  double elapsed_seconds{0.0};
+  double valid_rate_hz{0.0};
+  double error_ratio{0.0};
+  std::uint64_t attempts{0U};
+  std::uint64_t failures{0U};
+  std::uint64_t disconnects{0U};
+  std::size_t samples{0U};
+  bool ready{false};
 };
 
 class CameraBridgeNode final : public rclcpp::Node
@@ -85,9 +127,22 @@ public:
       "camera.reconnect_delay_ms", 1000, 60000);
     max_frame_age_ms_ = checked_positive_int_parameter("camera.max_frame_age_ms", 2000, 60000);
     stale_timeout_seconds_ = declare_parameter<double>("status.stale_timeout_seconds", 2.0);
+    startup_grace_seconds_ = declare_parameter<double>("status.startup_grace_seconds", 5.0);
+    quality_window_seconds_ = declare_parameter<double>("status.quality_window_seconds", 10.0);
+    min_valid_rate_hz_ = declare_parameter<double>("status.min_valid_rate_hz", 1.0);
+    max_error_ratio_ = declare_parameter<double>("status.max_error_ratio", 0.20);
+    min_quality_samples_ = checked_positive_int_parameter(
+      "status.min_quality_samples", 5, 1000);
     const double status_period_seconds =
       declare_parameter<double>("status.publish_period_seconds", 1.0);
     if (!std::isfinite(stale_timeout_seconds_) || stale_timeout_seconds_ <= 0.0 ||
+      !std::isfinite(startup_grace_seconds_) || startup_grace_seconds_ <= 0.0 ||
+      !std::isfinite(quality_window_seconds_) || quality_window_seconds_ < 2.0 ||
+      quality_window_seconds_ > 60.0 ||
+      !std::isfinite(min_valid_rate_hz_) || min_valid_rate_hz_ < 0.1 ||
+      min_valid_rate_hz_ > 30.0 ||
+      !std::isfinite(max_error_ratio_) || max_error_ratio_ < 0.0 ||
+      max_error_ratio_ > 1.0 ||
       !std::isfinite(status_period_seconds) || status_period_seconds <= 0.0)
     {
       throw std::invalid_argument("camera status timing parameters must be finite and positive");
@@ -104,7 +159,8 @@ public:
 
     load_calibration();
 
-    const auto qos = rclcpp::SensorDataQoS();
+    rclcpp::SensorDataQoS qos;
+    qos.keep_last(1);
     image_publisher_ = create_publisher<sensor_msgs::msg::Image>(image_topic_, qos);
     const auto camera_info_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
     camera_info_publisher_ =
@@ -116,7 +172,15 @@ public:
         std::chrono::duration<double>(status_period_seconds)),
       [this]() {publish_status();});
 
-    worker_ = std::thread([this]() {worker_loop();});
+    processor_ = std::thread([this]() {processor_loop();});
+    try {
+      worker_ = std::thread([this]() {worker_loop();});
+    } catch (...) {
+      running_.store(false);
+      latest_frame_.close();
+      processor_.join();
+      throw;
+    }
     RCLCPP_INFO(
       get_logger(), "READ-ONLY camera bridge waiting on local socket %s", socket_path_.c_str());
   }
@@ -124,9 +188,16 @@ public:
   ~CameraBridgeNode() override
   {
     running_.store(false);
+    active_connection_generation_.store(0U);
     reconnect_condition_.notify_all();
+    if (latest_frame_.close()) {
+      note_superseded();
+    }
     if (worker_.joinable()) {
       worker_.join();
+    }
+    if (processor_.joinable()) {
+      processor_.join();
     }
   }
 
@@ -144,7 +215,7 @@ private:
     if (value <= 0 || value > limit) {
       throw std::invalid_argument(name + " is outside its safe range");
     }
-    return value;
+    return static_cast<int>(value);
   }
 
   std::uint32_t checked_u32_parameter(
@@ -293,17 +364,73 @@ private:
     std::lock_guard<std::mutex> lock(state_mutex_);
     state_.connected = connected;
     if (!error.empty()) {
-      state_.last_error = std::move(error);
+      state_.last_error.set_connection(std::move(error));
     } else if (connected) {
       state_.last_error.clear();
     }
   }
 
-  void reject_frame(std::string error)
+  void reject_frame(const CameraFrameRecord & frame, std::string error)
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     state_.rejected += 1U;
-    state_.last_error = std::move(error);
+    if (state_.connected &&
+      active_connection_generation_.load() == frame.connection_generation)
+    {
+      state_.last_error.record_stream_error(
+        std::move(error), frame.connection_generation, frame.header.sequence);
+    }
+  }
+
+  void note_superseded()
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    state_.superseded += 1U;
+  }
+
+  static bool daemon_counters_regressed(
+    const CameraRuntimeState & state, const camera_ipc::FrameHeader & header) noexcept
+  {
+    return header.api_request_count < state.daemon_api_requests ||
+           header.api_accepted_count < state.daemon_api_accepted ||
+           header.source_rejected_count < state.daemon_source_rejected ||
+           header.api_error_count < state.daemon_api_errors ||
+           header.ipc_connection_count < state.daemon_ipc_connections ||
+           header.ipc_disconnect_count < state.daemon_ipc_disconnects;
+  }
+
+  void update_daemon_stats(
+    const camera_ipc::FrameHeader & header, const std::uint64_t connection_generation)
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    const bool reset = daemon_counters_regressed(state_, header);
+    const bool new_api_error = !reset && header.api_error_count > state_.daemon_api_errors;
+    const bool new_source_rejection =
+      !reset && header.source_rejected_count > state_.daemon_source_rejected;
+    if (reset) {
+      state_.daemon_counter_resets += 1U;
+      state_.daemon_epoch += 1U;
+      state_.last_error.record_stream_error(
+        "camera daemon counters restarted", connection_generation, header.sequence);
+    } else if (new_api_error) {
+      state_.last_error.record_stream_error(
+        "camera API error; opaque return code " + std::to_string(header.last_api_code),
+        connection_generation, header.sequence);
+    } else if (new_source_rejection) {
+      state_.last_error.record_stream_error(
+        "camera daemon rejected an invalid source JPEG", connection_generation,
+        header.sequence);
+    }
+    state_.daemon_api_requests = header.api_request_count;
+    state_.daemon_api_accepted = header.api_accepted_count;
+    state_.daemon_source_rejected = header.source_rejected_count;
+    state_.daemon_api_errors = header.api_error_count;
+    state_.daemon_ipc_connections = header.ipc_connection_count;
+    state_.daemon_ipc_disconnects = header.ipc_disconnect_count;
+    state_.daemon_last_api_code = header.last_api_code;
+    if ((header.flags & camera_ipc::kStatusOnly) != 0U) {
+      state_.status_records += 1U;
+    }
   }
 
   bool frame_timestamp_is_fresh(const camera_ipc::FrameHeader & header, std::string & error) const
@@ -329,69 +456,107 @@ private:
     return true;
   }
 
-  void publish_frame(
-    const camera_ipc::FrameHeader & header, const std::vector<std::uint8_t> & jpeg)
+  bool frame_is_invalidated(const CameraFrameRecord & frame) const
   {
+    return !running_.load() ||
+           active_connection_generation_.load() != frame.connection_generation;
+  }
+
+  void publish_frame(const CameraFrameRecord & frame)
+  {
+    if (frame_is_invalidated(frame)) {
+      note_superseded();
+      return;
+    }
+    const auto & header = frame.header;
+    const auto & jpeg = frame.jpeg;
     std::string error;
     if (!frame_timestamp_is_fresh(header, error)) {
-      reject_frame(std::move(error));
+      reject_frame(frame, std::move(error));
       return;
     }
-    if (!camera_ipc::looks_like_jpeg(jpeg.data(), jpeg.size())) {
-      reject_frame("camera payload lacks JPEG boundary markers");
-      return;
-    }
-
-    std::uint16_t encoded_width = 0U;
-    std::uint16_t encoded_height = 0U;
-    if (!camera_ipc::jpeg_dimensions(
-        jpeg.data(), jpeg.size(), encoded_width, encoded_height) ||
-      encoded_width > static_cast<std::uint16_t>(max_width_) ||
-      encoded_height > static_cast<std::uint16_t>(max_height_) ||
-      (header.width_hint != 0U && header.width_hint != encoded_width) ||
-      (header.height_hint != 0U && header.height_hint != encoded_height))
+    StrictJpegImage decoded;
+    if (!decode_jpeg_strict(
+        jpeg.data(), jpeg.size(), static_cast<std::uint32_t>(max_width_),
+        static_cast<std::uint32_t>(max_height_), decoded, error))
     {
-      reject_frame("JPEG dimensions are invalid, inconsistent, or exceed limits");
+      reject_frame(frame, "strict JPEG rejection: " + error);
       return;
     }
-
-    const cv::Mat encoded(1, static_cast<int>(jpeg.size()), CV_8UC1, const_cast<std::uint8_t *>(jpeg.data()));
-    const cv::Mat decoded = cv::imdecode(encoded, cv::IMREAD_COLOR);
-    if (decoded.empty() || decoded.cols <= 0 || decoded.rows <= 0 ||
-      decoded.cols > max_width_ || decoded.rows > max_height_ || decoded.type() != CV_8UC3)
+    if ((header.width_hint != 0U && header.width_hint != decoded.width) ||
+      (header.height_hint != 0U && header.height_hint != decoded.height))
     {
-      reject_frame("JPEG decode failed or decoded dimensions exceeded limits");
+      reject_frame(frame, "decoded JPEG dimensions disagree with daemon hints");
+      return;
+    }
+    // Decoding a full-resolution JPEG is intentionally outside the socket
+    // reader.  The one-slot mailbox already bounds pending work; publishing
+    // this valid in-flight frame avoids starvation when decode is consistently
+    // slower than acquisition.  Connection changes still invalidate it, and
+    // freshness is checked again after decode.
+    if (frame_is_invalidated(frame)) {
+      note_superseded();
+      return;
+    }
+    if (!frame_timestamp_is_fresh(header, error)) {
+      reject_frame(frame, std::move(error));
       return;
     }
 
-    std_msgs::msg::Header ros_header;
-    ros_header.stamp = rclcpp::Time(
-      static_cast<std::int64_t>(header.capture_realtime_ns), RCL_SYSTEM_TIME).to_msg();
-    ros_header.frame_id = frame_id_;
-    auto image = cv_bridge::CvImage(
-      ros_header, sensor_msgs::image_encodings::BGR8, decoded).toImageMsg();
+    try {
+      const cv::Mat decoded_view(
+        static_cast<int>(decoded.height), static_cast<int>(decoded.width), CV_8UC3,
+        decoded.bgr.data());
+      std_msgs::msg::Header ros_header;
+      const rclcpp::Time capture_time(
+        static_cast<std::int64_t>(header.capture_realtime_ns), RCL_SYSTEM_TIME);
+      ros_header.stamp = static_cast<builtin_interfaces::msg::Time>(capture_time);
+      ros_header.frame_id = frame_id_;
+      auto image = cv_bridge::CvImage(
+        ros_header, sensor_msgs::image_encodings::BGR8, decoded_view).toImageMsg();
 
-    sensor_msgs::msg::CameraInfo camera_info;
-    camera_info.header = ros_header;
-    camera_info.width = static_cast<std::uint32_t>(decoded.cols);
-    camera_info.height = static_cast<std::uint32_t>(decoded.rows);
-    camera_info.distortion_model = distortion_model_;
-    camera_info.d = distortion_;
-    camera_info.k = intrinsic_;
-    camera_info.r = rectification_;
-    camera_info.p = projection_;
+      sensor_msgs::msg::CameraInfo camera_info;
+      camera_info.header = ros_header;
+      camera_info.width = decoded.width;
+      camera_info.height = decoded.height;
+      camera_info.distortion_model = distortion_model_;
+      camera_info.d = distortion_;
+      camera_info.k = intrinsic_;
+      camera_info.r = rectification_;
+      camera_info.p = projection_;
 
-    image_publisher_->publish(*image);
-    camera_info_publisher_->publish(camera_info);
+      image_publisher_->publish(*image);
+      camera_info_publisher_->publish(camera_info);
+    } catch (const std::exception & exception) {
+      reject_frame(
+        frame, std::string("camera conversion/publish failed: ") + exception.what());
+      return;
+    }
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       state_.published += 1U;
       state_.last_published = std::chrono::steady_clock::now();
-      state_.last_error.clear();
+      if (state_.connected &&
+        active_connection_generation_.load() == frame.connection_generation)
+      {
+        state_.last_error.clear_if_recovered_by(
+          frame.connection_generation, header.sequence);
+      }
     }
   }
 
-  void receive_frames(const int descriptor)
+  void processor_loop()
+  {
+    while (running_.load()) {
+      auto frame = latest_frame_.wait_take();
+      if (!frame.has_value()) {
+        return;
+      }
+      publish_frame(*frame);
+    }
+  }
+
+  void receive_frames(const int descriptor, const std::uint64_t connection_generation)
   {
     std::uint64_t previous_sequence = 0U;
     bool have_sequence = false;
@@ -420,9 +585,17 @@ private:
       previous_sequence = header.sequence;
       have_sequence = true;
 
-      std::vector<std::uint8_t> jpeg(header.payload_bytes);
+      update_daemon_stats(header, connection_generation);
+      if ((header.flags & camera_ipc::kStatusOnly) != 0U) {
+        continue;
+      }
+
+      CameraFrameRecord frame;
+      frame.header = header;
+      frame.connection_generation = connection_generation;
+      frame.jpeg.resize(header.payload_bytes);
       if (!camera_ipc::read_exact(
-          descriptor, jpeg.data(), jpeg.size(), read_timeout_ms_, error))
+          descriptor, frame.jpeg.data(), frame.jpeg.size(), read_timeout_ms_, error))
       {
         set_connection_state(false, std::move(error));
         return;
@@ -431,26 +604,69 @@ private:
         std::lock_guard<std::mutex> lock(state_mutex_);
         state_.received += 1U;
       }
-      publish_frame(header, jpeg);
+      const auto put_result = latest_frame_.put(std::move(frame));
+      if (!put_result.accepted) {
+        return;
+      }
+      if (put_result.replaced) {
+        note_superseded();
+      }
     }
   }
 
   void worker_loop()
   {
+    std::uint64_t next_connection_generation = 1U;
     while (running_.load()) {
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        state_.connection_attempts += 1U;
+      }
       std::string error;
       const int descriptor = connect_daemon(error);
       if (descriptor < 0) {
-        set_connection_state(false, std::move(error));
+        {
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          state_.connection_failures += 1U;
+          state_.connected = false;
+          state_.last_error.set_connection(std::move(error));
+        }
         if (!wait_before_reconnect()) {
           return;
         }
         continue;
       }
-      set_connection_state(true);
-      receive_frames(descriptor);
+      if (next_connection_generation == std::numeric_limits<std::uint64_t>::max()) {
+        set_connection_state(false, "camera connection generation exhausted");
+        return;
+      }
+      const std::uint64_t connection_generation = next_connection_generation++;
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (state_.connections > 0U) {
+          state_.reconnects += 1U;
+        }
+        state_.connections += 1U;
+        state_.connected = true;
+        state_.last_error.clear();
+      }
+      active_connection_generation_.store(connection_generation);
+      receive_frames(descriptor, connection_generation);
+      std::uint64_t expected_generation = connection_generation;
+      active_connection_generation_.compare_exchange_strong(expected_generation, 0U);
+      if (latest_frame_.discard_generation(connection_generation)) {
+        note_superseded();
+      }
       ::shutdown(descriptor, SHUT_RDWR);
       ::close(descriptor);
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        state_.connected = false;
+        state_.disconnects += 1U;
+        if (state_.last_error.empty()) {
+          state_.last_error.set_connection("camera IPC disconnected");
+        }
+      }
       if (running_.load() && !wait_before_reconnect()) {
         return;
       }
@@ -459,50 +675,165 @@ private:
 
   void publish_status()
   {
+    const auto now = std::chrono::steady_clock::now();
     CameraRuntimeState snapshot;
+    CameraQualityMetrics quality;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      const auto now = std::chrono::steady_clock::now();
-      const double window = std::chrono::duration<double>(now - state_.previous_sample).count();
-      if (window > 0.0) {
-        state_.rate_hz = static_cast<double>(state_.published - state_.previous_published) / window;
+      CameraQualitySample sample;
+      sample.stamp = now;
+      sample.daemon_api_requests = state_.daemon_api_requests;
+      sample.daemon_api_errors = state_.daemon_api_errors;
+      sample.daemon_source_rejected = state_.daemon_source_rejected;
+      sample.bridge_rejected = state_.rejected;
+      sample.published = state_.published;
+      sample.disconnects = state_.disconnects;
+      sample.daemon_epoch = state_.daemon_epoch;
+      if (!quality_samples_.empty() &&
+        quality_samples_.back().daemon_epoch != sample.daemon_epoch)
+      {
+        quality_samples_.clear();
       }
-      state_.previous_published = state_.published;
-      state_.previous_sample = now;
+      quality_samples_.push_back(sample);
+      const auto cutoff = now - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(quality_window_seconds_));
+      while (quality_samples_.size() > 1U && quality_samples_[1U].stamp <= cutoff) {
+        quality_samples_.pop_front();
+      }
+      const auto & baseline = quality_samples_.front();
+      const auto delta = [](const std::uint64_t current, const std::uint64_t previous) {
+          return current >= previous ? current - previous : 0U;
+        };
+      quality.elapsed_seconds = std::chrono::duration<double>(now - baseline.stamp).count();
+      quality.attempts = delta(sample.daemon_api_requests, baseline.daemon_api_requests);
+      const auto api_errors = delta(sample.daemon_api_errors, baseline.daemon_api_errors);
+      const auto source_rejected =
+        delta(sample.daemon_source_rejected, baseline.daemon_source_rejected);
+      const auto bridge_rejected = delta(sample.bridge_rejected, baseline.bridge_rejected);
+      quality.failures = api_errors + source_rejected + bridge_rejected;
+      quality.disconnects = delta(sample.disconnects, baseline.disconnects);
+      const auto published = delta(sample.published, baseline.published);
+      if (quality.elapsed_seconds > 0.0) {
+        quality.valid_rate_hz = static_cast<double>(published) / quality.elapsed_seconds;
+      }
+      if (quality.attempts > 0U) {
+        quality.error_ratio = std::min(
+          1.0, static_cast<double>(quality.failures) /
+          static_cast<double>(quality.attempts));
+      }
+      quality.samples = quality_samples_.size();
+      quality.ready = quality.elapsed_seconds >= 2.0 &&
+        quality.attempts >= static_cast<std::uint64_t>(min_quality_samples_);
+      state_.rate_hz = quality.valid_rate_hz;
       snapshot = state_;
     }
 
-    const auto now = std::chrono::steady_clock::now();
+    const double startup_age = std::chrono::duration<double>(now - snapshot.started).count();
+    double frame_age = std::numeric_limits<double>::infinity();
+    if (snapshot.published > 0U) {
+      frame_age = std::chrono::duration<double>(now - snapshot.last_published).count();
+    }
     diagnostic_msgs::msg::DiagnosticStatus status;
     status.name = "go2_sensors/camera";
     status.hardware_id = "unitree_go2";
-    if (!snapshot.connected) {
-      status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
-      status.message = snapshot.last_error.empty() ? "camera daemon disconnected" : snapshot.last_error;
-    } else if (snapshot.published == 0U) {
+    if (startup_age < startup_grace_seconds_ &&
+      (!snapshot.connected || snapshot.published == 0U || !quality.ready))
+    {
       status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
-      status.message = "connected; waiting for first valid frame";
+      status.message = "camera quality gate in startup grace period";
+    } else if (!snapshot.connected) {
+      status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      status.message = snapshot.last_error.empty() ?
+        "camera daemon disconnected" : snapshot.last_error.message();
+    } else if (snapshot.published == 0U) {
+      status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      status.message = "no valid camera frame before startup deadline";
+    } else if (frame_age > stale_timeout_seconds_) {
+      status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      status.message = "camera stream stale";
+    } else if (quality.ready && quality.valid_rate_hz < min_valid_rate_hz_) {
+      status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      status.message = "valid camera rate is below required minimum";
+    } else if (quality.ready && quality.error_ratio > max_error_ratio_) {
+      status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      status.message = "camera rejection/API error ratio exceeds limit";
+    } else if (!quality.ready) {
+      status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+      status.message = "collecting bounded camera quality window";
+    } else if (quality.failures > 0U || quality.disconnects > 0U) {
+      status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+      status.message = "camera is usable but quality errors occurred in the active window";
     } else {
-      const double age = std::chrono::duration<double>(now - snapshot.last_published).count();
-      status.level = age <= stale_timeout_seconds_ ?
-        diagnostic_msgs::msg::DiagnosticStatus::OK :
-        diagnostic_msgs::msg::DiagnosticStatus::ERROR;
-      status.message = age <= stale_timeout_seconds_ ? "receiving" : "camera stream stale";
-      status.values.push_back(camera_key_value("age_ms", std::to_string(age * 1000.0)));
+      status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+      status.message = "camera quality gate passed";
     }
+    const bool healthy = status.level == diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.values.push_back(camera_key_value(
+      "age_ms", std::isfinite(frame_age) ? std::to_string(frame_age * 1000.0) : "unknown"));
     status.values.push_back(camera_key_value("socket_path", socket_path_));
     status.values.push_back(camera_key_value("image_topic", image_topic_));
     status.values.push_back(camera_key_value("frame_id", frame_id_));
     status.values.push_back(camera_key_value("image_type", "sensor_msgs/msg/Image"));
     status.values.push_back(camera_key_value("camera_info_type", "sensor_msgs/msg/CameraInfo"));
     status.values.push_back(camera_key_value(
-      "image_qos", "sensor_data (best_effort, volatile, keep_last)"));
+      "image_qos", "sensor_data (best_effort, volatile, keep_last(1))"));
     status.values.push_back(camera_key_value(
       "camera_info_qos", "reliable, transient_local, keep_last(1)"));
     status.values.push_back(camera_key_value("received_count", std::to_string(snapshot.received)));
     status.values.push_back(camera_key_value("published_count", std::to_string(snapshot.published)));
     status.values.push_back(camera_key_value("rejected_count", std::to_string(snapshot.rejected)));
+    status.values.push_back(camera_key_value(
+      "superseded_count", std::to_string(snapshot.superseded)));
+    status.values.push_back(camera_key_value(
+      "pending_frame_depth", std::to_string(latest_frame_.depth())));
+    status.values.push_back(camera_key_value(
+      "status_record_count", std::to_string(snapshot.status_records)));
+    status.values.push_back(camera_key_value(
+      "connection_attempt_count", std::to_string(snapshot.connection_attempts)));
+    status.values.push_back(camera_key_value(
+      "connection_failure_count", std::to_string(snapshot.connection_failures)));
+    status.values.push_back(camera_key_value(
+      "connection_count", std::to_string(snapshot.connections)));
+    status.values.push_back(camera_key_value(
+      "reconnect_count", std::to_string(snapshot.reconnects)));
+    status.values.push_back(camera_key_value(
+      "disconnect_count", std::to_string(snapshot.disconnects)));
+    status.values.push_back(camera_key_value(
+      "daemon_api_request_count", std::to_string(snapshot.daemon_api_requests)));
+    status.values.push_back(camera_key_value(
+      "daemon_api_accepted_count", std::to_string(snapshot.daemon_api_accepted)));
+    status.values.push_back(camera_key_value(
+      "daemon_source_rejected_count", std::to_string(snapshot.daemon_source_rejected)));
+    status.values.push_back(camera_key_value(
+      "daemon_api_error_count", std::to_string(snapshot.daemon_api_errors)));
+    status.values.push_back(camera_key_value(
+      "daemon_ipc_connection_count", std::to_string(snapshot.daemon_ipc_connections)));
+    status.values.push_back(camera_key_value(
+      "daemon_ipc_disconnect_count", std::to_string(snapshot.daemon_ipc_disconnects)));
+    status.values.push_back(camera_key_value(
+      "daemon_counter_reset_count", std::to_string(snapshot.daemon_counter_resets)));
+    status.values.push_back(camera_key_value(
+      "daemon_last_api_code", std::to_string(snapshot.daemon_last_api_code)));
+    status.values.push_back(camera_key_value(
+      "daemon_last_api_code_semantics", "opaque vendor return code; not interpreted"));
     status.values.push_back(camera_key_value("rate_hz", std::to_string(snapshot.rate_hz)));
+    status.values.push_back(camera_key_value(
+      "quality_window_seconds", std::to_string(quality.elapsed_seconds)));
+    status.values.push_back(camera_key_value(
+      "quality_window_attempts", std::to_string(quality.attempts)));
+    status.values.push_back(camera_key_value(
+      "quality_window_failures", std::to_string(quality.failures)));
+    status.values.push_back(camera_key_value(
+      "quality_window_disconnects", std::to_string(quality.disconnects)));
+    status.values.push_back(camera_key_value(
+      "quality_error_ratio", std::to_string(quality.error_ratio)));
+    status.values.push_back(camera_key_value(
+      "min_valid_rate_hz", std::to_string(min_valid_rate_hz_)));
+    status.values.push_back(camera_key_value(
+      "max_error_ratio", std::to_string(max_error_ratio_)));
+    status.values.push_back(camera_key_value("quality_ready", quality.ready ? "true" : "false"));
+    status.values.push_back(camera_key_value("healthy", healthy ? "true" : "false"));
+    status.values.push_back(camera_key_value("last_error", snapshot.last_error.message()));
     status.values.push_back(camera_key_value("calibrated", calibrated_ ? "true" : "false"));
 
     diagnostic_msgs::msg::DiagnosticArray diagnostics;
@@ -523,6 +854,11 @@ private:
   int reconnect_delay_ms_{1000};
   int max_frame_age_ms_{2000};
   double stale_timeout_seconds_{2.0};
+  double startup_grace_seconds_{5.0};
+  double quality_window_seconds_{10.0};
+  double min_valid_rate_hz_{1.0};
+  double max_error_ratio_{0.20};
+  int min_quality_samples_{5};
   std::string distortion_model_;
   std::vector<double> distortion_;
   std::array<double, 9> intrinsic_{};
@@ -531,11 +867,15 @@ private:
   bool calibrated_{false};
 
   std::atomic<bool> running_{true};
+  std::atomic<std::uint64_t> active_connection_generation_{0U};
+  LatestFrameMailbox latest_frame_;
   std::thread worker_;
+  std::thread processor_;
   std::mutex reconnect_mutex_;
   std::condition_variable reconnect_condition_;
   std::mutex state_mutex_;
   CameraRuntimeState state_;
+  std::deque<CameraQualitySample> quality_samples_;
 
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_publisher_;

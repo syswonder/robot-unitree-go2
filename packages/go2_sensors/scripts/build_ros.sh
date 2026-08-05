@@ -2,11 +2,14 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_ROOT="${ROBONIX_DEPLOY_DIR:-$(cd "$ROOT/../.." && pwd)}"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 ROS_SETUP="/opt/ros/${ROS_DISTRO}/setup.bash"
 BUILD_ROOT="${GO2_SENSORS_BUILD_ROOT:-${ROOT}/.build/ros}"
 ROBONIX_IDL_ROOT="${ROOT}/rbnx-build/codegen/ros2_idl"
 ROBONIX_IDL_SETUP="${ROOT}/rbnx-build/codegen/ros2_idl/install/setup.bash"
+# shellcheck disable=SC1091
+source "$DEPLOY_ROOT/scripts/build_robonix_ros2_overlay.sh"
 
 if [[ ! -r "${ROS_SETUP}" ]]; then
   echo "Missing ${ROS_SETUP}; install/source ROS 2 Humble before building." >&2
@@ -27,10 +30,8 @@ set +u
 source "${ROS_SETUP}"
 set -u
 
-colcon --log-base "${ROBONIX_IDL_ROOT}/log" build \
-  --base-paths "${ROBONIX_IDL_ROOT}" \
-  --build-base "${ROBONIX_IDL_ROOT}/build" \
-  --install-base "${ROBONIX_IDL_ROOT}/install"
+robonix_build_ros2_overlay "${ROBONIX_IDL_ROOT}" \
+  --packages-select lifecycle
 if [[ ! -r "${ROBONIX_IDL_SETUP}" ]]; then
   echo "Robonix ROS 2 IDL overlay did not produce ${ROBONIX_IDL_SETUP}" >&2
   exit 1

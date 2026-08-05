@@ -7,6 +7,7 @@ frame_id: map
 landmarks:
   - id: vending_machine_front
     name: 自动售货机
+    kind: navigation
     aliases:
       - 售货机
       - 自动贩卖机
@@ -19,6 +20,9 @@ landmarks:
       - 去自动售货机前面
       - 带我到售货机那里
     verified: false
+    # Metres. This is descriptive semantic-arrival metadata; the current
+    # navigation RPC still receives the exact point pose below.
+    arrival_radius: 0.35
     pose:
       x: 0.0
       y: 0.0

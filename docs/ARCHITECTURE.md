@@ -29,6 +29,15 @@ values after loading local configuration, and a static compatibility gate
 requires the upstream bind-host implementation and container forwarding.
 Scene's debug UI and Mapping's unauthenticated administration UI remain off.
 
+The dashboard's optional browser voice entry is a narrow exception to a
+purely observational UI, not a hardware command surface. It is disabled by
+default and accepts only strict 16 kHz mono PCM WAV from its own loopback
+origin. The handoff path is browser → dashboard memory → the pinned local
+`audio_client_bridge` → `robonix/system/liaison/voice`. Liaison remains the
+only ASR/Pilot entry; the dashboard has no navigation client, ROS publisher,
+or Unitree dependency. The telemetry capabilities remain read-only and the
+independent chassis motion gates are unchanged.
+
 ## State and localization
 
 ```text
@@ -62,6 +71,50 @@ The read-only sensor package relays the onboard PointCloud2 to
 `/scanner/cloud`, republishes the validated chassis IMU under the sensor
 provider, and isolates Unitree VideoClient from ROS through a second local IPC
 bridge. The dashboard subscribes only; it has no publisher or motion control.
+Camera availability is not inferred from one ROS Image. The bridge publishes a
+sliding-window diagnostic and the Robonix provider declares the camera
+capability only after `quality_ready=true`, `healthy=true`, an OK diagnostic,
+fresh frames, sufficient valid FPS, and an acceptable rejection/API-error
+ratio. The NX container health check independently enforces the same live
+diagnostic, so persistent vendor API codes (including the observed SDK
+``Call api timeout error`` code 3104), corrupt JPEGs, low FPS, or disconnects
+make the runtime unhealthy.
+The strict full-stack readiness report also requires the Dashboard's current
+camera diagnostic to have `ready=true`, `healthy=true`, and level OK; a WARN or
+ERROR window therefore cannot be reported as a camera/dashboard PASS merely
+because the last ROS Image is still fresh.
+
+## Runtime placement and publisher ownership
+
+The deployment never chooses a publisher by discovery. Exactly one reviewed
+placement is selected before startup:
+
+| Placement | NX owns | Workstation owns |
+| --- | --- | --- |
+| `workstation-local` | nothing in this deployment | chassis/odom, sensors/camera, description/TF, Robonix and UI |
+| `workstation-full-nx-sensors` | standardized camera, lidar and IMU topics only | chassis/odom, description/TF, full Robonix and UI |
+| `workstation-ui-nx-full` | camera, lidar/IMU, chassis/odom and description/TF | read-only dashboard client only |
+
+For the middle placement the NX skips both the passive chassis node and
+`robot_state_publisher`; the workstation chassis supplies `/imu/data` over DDS
+to the NX relay. For the UI-only placement the workstation does not boot Atlas,
+Mapping, Nav2, speech, any local hardware provider, or a description publisher.
+The UI therefore shows NX telemetry but no map/navigation state.
+
+Each launcher first takes a non-blocking kernel `flock` for its complete
+process lifetime. The lock—not a PID file—is authoritative, is released by the
+kernel after crashes, and is accompanied by atomically replaced audit metadata.
+This makes two local placement starts mutually exclusive without stale-PID
+recovery or process-name matching.
+
+Before creating any owned process, `scripts/check_runtime_ownership.sh` queries
+publisher counts for both camera topics, `/scanner/cloud`, `/scanner/imu`,
+`/odom`, and `/tf_static`. Counts must match the selected placement for three
+stable samples. After children start, the same gate runs again and requires
+the exact final publisher set; a missing or duplicate owner tears down that
+startup. Queries are time-bounded and never publish, invoke a service, or call
+an action. There is no automatic fallback because switching ownership after
+discovery could briefly create two command-state or sensor writers.
 
 ## Semantic target
 

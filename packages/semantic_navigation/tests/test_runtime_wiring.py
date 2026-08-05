@@ -86,6 +86,10 @@ class RuntimeWiringTest(unittest.TestCase):
         self.assertIn("if run.remote_terminal", monitor)
         self.assertNotIn("if run.invalidated:\n            return", monitor)
 
+    def test_every_status_detail_echoes_durable_semantic_run_id(self) -> None:
+        source = function_source("_run_detail")
+        self.assertIn('"semantic_run_id": run.semantic_run_id', source)
+
     def test_lifecycle_transition_serializes_with_dispatch_reservation(self) -> None:
         source = function_source("_on_lifecycle_transition")
         self.assertIn("with _lock", source)

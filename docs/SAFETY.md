@@ -11,6 +11,14 @@ The audited Mapping launcher must honor `MAPPING_ENABLE_VIZ=false` without
 probing X11 or invoking `xhost`; build/start reject an upstream revision that
 lacks that contract.
 
+The browser microphone route remains off unless
+`GO2_DASHBOARD_BROWSER_VOICE_ENABLED=1`. Enabling it authorizes only a
+same-origin, in-memory audio handoff to Liaison; it does not authorize motion.
+Keep the dashboard and both downstream endpoints on literal loopback, keep
+Liaison access/voiceprint policy enabled for a physical demonstration, and do
+not set `ROBONIX_LIAISON_VOICE_SAVE_DIR` when recordings must not persist.
+Only one reverse-audio client may be active during the demo.
+
 ## Gate 0 — physical setup
 
 - Go2 is on a level, dry, non-slippery floor with at least 2 m clearance.
@@ -28,9 +36,14 @@ not create the SportClient motion daemon.
 
 ## Gate 2 — offline and bag replay
 
-Run `scripts/validate_offline.sh`, replay only recorded state/sensor topics in
-an isolated ROS domain, and use a no-op `/cmd_vel` sink. No real dog is on that
-domain.
+Run `scripts/validate_offline.sh`, then use
+`scripts/gate2_replay_acceptance.sh` as documented in
+[GATE2_REPLAY_ACCEPTANCE.md](GATE2_REPLAY_ACCEPTANCE.md). The harness replays
+only an explicit state/sensor allowlist in a localhost-only isolated ROS
+domain and terminates `/cmd_vel` at a subscription-only evidence sink. No real
+dog or Go2 NIC is attached to that domain. `SKIP`, `READY_NOT_RUN`, and
+`FIXTURE_ONLY` are not passes; only a fingerprinted real-bag result with every
+required measured check may report `PASS`.
 
 ## Gate 3 — localization while stationary
 
@@ -43,7 +56,7 @@ deskew until usable PointCloud2 per-point timestamps have been measured.
 
 ## Gate 4 — enable transport, still disarmed
 
-Set all four local environment values. `GO2_ALLOWED_MODES` must contain only
+Set the local environment values below. `GO2_ALLOWED_MODES` must contain only
 the decimal `SportModeState.mode` value(s) observed while this exact robot was
 stationary during the read-only audit; never copy or guess another robot's
 values:
@@ -53,7 +66,25 @@ GO2_ALLOW_MOTION=true
 GO2_OPERATOR_PRESENT=true
 GO2_SAFETY_ACK=I_UNDERSTAND_GO2_CAN_MOVE
 GO2_ALLOWED_MODES=<audited comma-separated values>
+# Normally empty. If the current error_code is non-zero, this must contain
+# only the exact robot/firmware value explicitly approved for this session.
+GO2_ALLOWED_STATE_MARKERS=<empty-or-audited-decimal-values>
 ```
+
+An allowed mode is necessary but not sufficient. Zero remains the only
+`SportModeState.error_code` accepted by default. The exceptional
+`GO2_ALLOWED_STATE_MARKERS` input gives an undocumented non-zero value no
+meaning beyond “this exact opaque firmware marker was reviewed for this
+session”; it is not a mode, health proof, or RPC acknowledgement. Any marker
+change always blocks and latches a motion-capable profile closed, requiring an
+explicit disarm acknowledgement followed by a new arm. A dedicated
+motion-disabled `external_verified` manual-mapping manifest may separately opt
+in to transitions wholly inside an explicit set of at least two reviewed
+markers; that exception is rejected whenever `allow_motion=true` and does not
+bypass freshness, measurement, odometry, TF, or continuity gates. A value not
+already in the operator-provided allowlist requires a reviewed restart with
+updated configuration. Never copy another robot's values or infer meaning from
+an App colour.
 
 The dedicated Go2 NIC must remain a point-to-point trusted link with exactly
 `192.168.123.99/24`, no other IPv4 address, IPv6 disabled, no gateway or DNS,

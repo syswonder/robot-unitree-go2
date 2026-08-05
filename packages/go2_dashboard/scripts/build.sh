@@ -6,7 +6,7 @@ BUILD_DIR="${ROOT_DIR}/rbnx-build"
 VENV_DIR="${BUILD_DIR}/venv"
 RBNX_BIN="${RBNX_BIN:-rbnx}"
 
-echo "[go2-dashboard] building read-only telemetry UI"
+echo "[go2-dashboard] building read-only telemetry + optional Liaison voice UI"
 PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
   PYTHONDONTWRITEBYTECODE=1 \
   python3 -m unittest discover -s "${ROOT_DIR}/tests" -v
@@ -36,5 +36,13 @@ PYTHONPATH="${ROOT_DIR}:${CODEGEN_PATH}:${ROBONIX_API_ROOT}${PYTHONPATH:+:${PYTH
 PYTHONPATH="${ROOT_DIR}:${CODEGEN_PATH}:${ROBONIX_API_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
   "${VENV_DIR}/bin/python" -c \
   'import fastapi, PIL, uvicorn; import robonix_api, go2_dashboard_pb2, go2_dashboard_mcp; import go2_dashboard.service; print("[go2-dashboard] provider dependencies OK")'
+
+# The first unittest pass intentionally runs before PyPI dependencies exist.
+# Re-run the HTTP boundary suite inside the package venv so FastAPI exercises
+# disabled, loopback, nonce, MIME, Content-Length, and byte-limit behavior.
+PYTHONPATH="${ROOT_DIR}:${CODEGEN_PATH}:${ROBONIX_API_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
+  PYTHONDONTWRITEBYTECODE=1 \
+  "${VENV_DIR}/bin/python" -m unittest discover \
+    -s "${ROOT_DIR}/tests" -p 'test_web_voice.py' -v
 
 echo "[go2-dashboard] build complete"
