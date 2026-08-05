@@ -8,7 +8,7 @@ catalog:
   license: Apache-2.0 AND BSD-3-Clause AND MIT AND (EPL-2.0 OR EDL-1.0)
   tags: [robot, unitree, go2, jetson, arm64, navigation, speech, no-motion]
   maintainers:
-    - Origamii520 <Origamii520@users.noreply.github.com>
+    - Origamii520 <zxq13204030517@163.com>
 
 env:
   RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
