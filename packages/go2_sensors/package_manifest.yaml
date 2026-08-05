@@ -7,7 +7,7 @@ package:
   license: Apache-2.0 AND BSD-3-Clause AND MIT AND (EPL-2.0 OR EDL-1.0)
   tags: [primitive, unitree, go2, sensor, lidar3d, imu, camera, ros2]
   maintainers:
-    - Origamii520 <Origamii520@users.noreply.github.com>
+    - Origamii520 <zxq13204030517@163.com>
 
 build: bash build.sh
 start: bash start.sh

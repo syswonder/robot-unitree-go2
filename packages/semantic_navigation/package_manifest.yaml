@@ -7,7 +7,7 @@ package:
   license: Apache-2.0
   tags: [skill, semantic, navigation, unitree, go2, chinese]
   maintainers:
-    - Origamii520 <Origamii520@users.noreply.github.com>
+    - Origamii520 <zxq13204030517@163.com>
 
 capability_id: semantic_navigation
 build: bash scripts/build.sh
