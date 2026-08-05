@@ -47,7 +47,7 @@ class FirstMotionProfileContractTest(unittest.TestCase):
                 ],
                 "excluded_streams": ["mid360_cloud"],
                 "max_stream_age_s": 0.20,
-                "max_source_receipt_delta_s": 0.075,
+                "max_source_receipt_delta_s": 0.20,
             },
         )
         timestamp_contract = data["timestamp_discipline"]

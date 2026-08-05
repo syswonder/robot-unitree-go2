@@ -30,6 +30,10 @@ class SecondMotionProfileContractTest(unittest.TestCase):
         )
         self.assertEqual(data["external_odom_timeout_s"], 0.20)
         self.assertEqual(
+            data["timestamp_discipline"]["max_source_receipt_delta_s"],
+            0.20,
+        )
+        self.assertEqual(
             data["motion"],
             {
                 "max_linear_x_mps": 0.30,
