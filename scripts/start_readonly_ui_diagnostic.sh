@@ -134,17 +134,25 @@ child_is_exact() {
 start_child() {
   local name="$1"
   shift
-  local pid identity pgid start index
+  local pid candidate identity pgid start index
   setsid -- "$@" >>"${log_root}/${name}.log" 2>&1 &
   pid=$!
+  identity=""
   for _ in $(seq 1 20); do
-    identity="$(process_identity "$pid" 2>/dev/null || true)"
-    [[ -n "$identity" ]] && break
+    candidate="$(process_identity "$pid" 2>/dev/null || true)"
+    if [[ -n "$candidate" ]]; then
+      read -r pgid start <<< "$candidate"
+      if [[ "$pgid" == "$pid" ]]; then
+        identity="$candidate"
+        break
+      fi
+    fi
     sleep 0.05
   done
   [[ -n "${identity:-}" ]] || {
+    kill -TERM "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
-    echo "diagnostic child failed during startup: $name" >&2
+    echo "diagnostic child did not receive an exclusive process group: $name" >&2
     return 4
   }
   read -r pgid start <<< "$identity"
