@@ -41,6 +41,7 @@ constexpr std::uint64_t kSecondMotionMaxMotionMs = 1'500U;
 constexpr const char *kStagedNav2Profile =
     "workstation-staged-nav2-corrected-v1";
 constexpr float kStagedNav2MaxVx = 0.30F;
+constexpr float kRobotTrackMaxVx = 0.50F;
 constexpr float kStagedNav2MaxVy = 0.0F;
 constexpr float kStagedNav2MaxWz = 0.40F;
 // Zero disables only the whole-navigation-session deadline.  The independent
@@ -192,7 +193,8 @@ Options ParseOptions(int argc, char **argv) {
       options.max_motion_ms == kSecondMotionMaxMotionMs;
   const bool staged_nav2_envelope =
       options.motion_profile == kStagedNav2Profile &&
-      options.max_vx == kStagedNav2MaxVx &&
+      (options.max_vx == kStagedNav2MaxVx ||
+       options.max_vx == kRobotTrackMaxVx) &&
       options.max_vy == kStagedNav2MaxVy &&
       options.max_wz == kStagedNav2MaxWz &&
       options.max_motion_ms == kStagedNav2MaxMotionMs;

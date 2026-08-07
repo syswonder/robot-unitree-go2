@@ -1,0 +1,109 @@
+{
+  "assets_ready": true,
+  "benchmark": {
+    "image": "upstream/MiniCPM-Robot/MiniCPM-RobotTrack/sim_data/sample/frames/sequence_001/000001.jpg",
+    "instruction": "Walk after the person with a red sports bra and dark blue shorts",
+    "iterations": 5,
+    "metrics_ms": {
+      "client_http_roundtrip_mean": 66.92,
+      "e2e_mean": 60.84,
+      "e2e_p50": 60.76,
+      "e2e_p95": 63.95,
+      "policy_forward_mean": 43.73,
+      "server_route_total_mean": 64.27,
+      "vision_dino_mean": 5.48,
+      "vision_encode_mean": 17.04,
+      "vision_siglip_mean": 6.53
+    },
+    "reported_fps_mean": 16.437,
+    "warmup_iterations": 2
+  },
+  "captured_at": "2026-08-06T14:27:49+08:00",
+  "hardware_access": {
+    "camera": false,
+    "robot": false,
+    "robot_network": false,
+    "ros_graph": false
+  },
+  "result": "pass",
+  "sequence": [
+    {
+      "base_velocity": [
+        0.36058950424194336,
+        0.0,
+        0.005247084889560938
+      ],
+      "e2e_ms": 89.49284900154453,
+      "frame": "000001.jpg",
+      "http_status": 200,
+      "policy_forward_ms": 47.445666990824975,
+      "vision_encode_ms": 41.97578999446705,
+      "waypoints_finite": true,
+      "waypoints_shape": [8, 3]
+    },
+    {
+      "base_velocity": [
+        0.31546497344970703,
+        0.0,
+        -0.3743254840373993
+      ],
+      "e2e_ms": 61.29829400742892,
+      "frame": "000002.jpg",
+      "http_status": 200,
+      "policy_forward_ms": 47.124851000262424,
+      "vision_encode_ms": 14.103877998422831,
+      "waypoints_finite": true,
+      "waypoints_shape": [8, 3]
+    },
+    {
+      "base_velocity": [
+        0.593166708946228,
+        0.0,
+        0.10071750730276108
+      ],
+      "e2e_ms": 63.22681900928728,
+      "frame": "000003.jpg",
+      "http_status": 200,
+      "policy_forward_ms": 48.075569997308776,
+      "vision_encode_ms": 15.073541013407521,
+      "waypoints_finite": true,
+      "waypoints_shape": [8, 3]
+    },
+    {
+      "base_velocity": [
+        0.48106399178504944,
+        0.0,
+        -0.03619106113910675
+      ],
+      "e2e_ms": 62.57613700290676,
+      "frame": "000004.jpg",
+      "http_status": 200,
+      "policy_forward_ms": 47.51048600883223,
+      "vision_encode_ms": 14.996402998804115,
+      "waypoints_finite": true,
+      "waypoints_shape": [8, 3]
+    }
+  ],
+  "server": {
+    "backends": {
+      "dino": "torch",
+      "siglip": "torch"
+    },
+    "host": "127.0.0.1",
+    "port": 5801,
+    "requests_http_200": 12,
+    "stopped_after_test": true
+  },
+  "software": {
+    "gpu": "NVIDIA GeForce RTX 4070 Laptop GPU",
+    "torch": "2.11.0+cu130",
+    "torchvision": "0.26.0+cu130",
+    "torchvision_wheel_sha256": "7d820708732d2467caf2ef16c3ad60c8ff402bd05bd246b108ee080f3fbfdc6e"
+  },
+  "validation": {
+    "all_sequence_http_200": true,
+    "all_velocities_finite_and_within_launcher_limits": true,
+    "all_waypoints_finite_8x3": true,
+    "scope": "offline repository sample images; not a D435i or physical follow result"
+  }
+}
