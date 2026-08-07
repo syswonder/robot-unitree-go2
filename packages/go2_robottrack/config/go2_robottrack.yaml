@@ -1,0 +1,22 @@
+go2_robottrack:
+  ros__parameters:
+    mode: dry-run
+    rgb_topic: /go2/d435i/color/image_raw
+    command_topic: /go2/robottrack/cmd_vel_raw
+    server_url: http://127.0.0.1:5801/eval_dual
+    instruction: Follow the person ahead
+    model_input_mode: center_crop_height
+    model_crop_size: 384
+    jpeg_quality: 60
+    http_timeout_s: 30.0
+    waypoint_strategy: first
+    control_dt: 0.1
+    dispatch_hz: 50.0
+    max_plan_age_s: 1.5
+    max_vx: 0.15
+    max_wz: 0.30
+    nav_raw_topic: /go2/robottrack/nav_cmd_vel_raw
+    robottrack_raw_topic: /go2/robottrack/cmd_vel_raw
+    selected_output_topic: /cmd_vel_nav
+    selected_source: robottrack
+    source_max_age_s: 0.25

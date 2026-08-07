@@ -1,0 +1,19 @@
+manifestVersion: 1
+
+package:
+  name: robonix.primitive.unitree.go2.robottrack
+  version: 0.1.0
+  description: D435i RGB bridge for MiniCPM-RobotTrack following on Unitree Go2 EDU.
+  license: Apache-2.0
+  tags: [primitive, unitree, go2, d435i, minicpm, robottrack, following, ros2]
+  maintainers:
+    - Origamii520 <Origamii520@users.noreply.github.com>
+
+build: bash build.sh
+start: bash start.sh
+
+capabilities:
+  - name: robonix/primitive/follow/driver
+    path: capabilities/driver.v1.toml
+
+depends: []

@@ -19,6 +19,8 @@ STAGE=stage1
 MOTION_ACK=I_APPROVE_GO2_STAGED_NAV2_MOTION
 STANDARD_MODE="${GO2_STAGED_NAV2_STANDARD_MODE:-true}"
 PERSISTENT_MODE="${GO2_PERSISTENT_NAV2_MODE:-false}"
+ROBOTTRACK_MODE="${GO2_ROBOTTRACK_MODE:-false}"
+ROBOTTRACK_MAX_LINEAR_MPS=0.50
 WIRELESS_INTERFACE=wlx500ff54809b8
 WIRELESS_CONNECTION_NAME=Robonix-Go2
 WIRELESS_CONNECTION_UUID=ce767234-9037-4a53-a5f4-aa7b6cbf743f
@@ -64,8 +66,15 @@ case "$PERSISTENT_MODE" in
   true|false) ;;
   *) die 2 "GO2_PERSISTENT_NAV2_MODE must be true or false" ;;
 esac
+case "$ROBOTTRACK_MODE" in
+  true|false) ;;
+  *) die 2 "GO2_ROBOTTRACK_MODE must be true or false" ;;
+esac
 [[ "$PERSISTENT_MODE" == false || "$STANDARD_MODE" == true ]] \
   || die 2 "persistent Nav2 requires standard mode"
+[[ "$ROBOTTRACK_MODE" == false \
+  || ( "$PERSISTENT_MODE" == true && "$STANDARD_MODE" == true ) ]] \
+  || die 2 "RobotTrack requires persistent standard mode"
 
 if [[ "$STANDARD_MODE" == true && -z "${GO2_TIMESTAMP_APPROVAL_FILE:-}" ]]; then
   while IFS= read -r candidate; do
@@ -487,9 +496,17 @@ materialize_runtime_config() {
 }
 materialize_runtime_config \
   "$ROOT/config/rtabmap_params.yaml" "$CONFIG_DIR/rtabmap_params.yaml"
+NAV2_RENDER_ARGS=(
+  --source "$ROOT/config/nav2_params_go2.yaml"
+  --output "$CONFIG_DIR/nav2_params_go2.yaml"
+)
+if [[ "$ROBOTTRACK_MODE" == true ]]; then
+  NAV2_RENDER_ARGS+=(
+    --external-linear-speed-mps "$ROBOTTRACK_MAX_LINEAR_MPS"
+  )
+fi
 "$PYTHON" "$ROOT/scripts/render_staged_nav2_params.py" \
-  --source "$ROOT/config/nav2_params_go2.yaml" \
-  --output "$CONFIG_DIR/nav2_params_go2.yaml" >/dev/null
+  "${NAV2_RENDER_ARGS[@]}" >/dev/null
 materialize_runtime_config \
   "$ROOT/config/navigate.xml" "$CONFIG_DIR/navigate.xml"
 materialize_runtime_config \
@@ -507,13 +524,22 @@ fi
 
 MANIFEST="$RUN_DIR/robonix_manifest.yaml"
 MANIFEST_RENDERER="$ROOT/deploy/time-sync/render_workstation_staged_nav2_manifest.py"
+MANIFEST_RENDERER_ARGS=()
 if [[ "$PERSISTENT_MODE" == true ]]; then
   MANIFEST_RENDERER="$ROOT/deploy/time-sync/render_workstation_persistent_nav2_manifest.py"
+fi
+if [[ "$ROBOTTRACK_MODE" == true ]]; then
+  MANIFEST_RENDERER="$ROOT/deploy/time-sync/render_workstation_robottrack_manifest.py"
+  MANIFEST_RENDERER_ARGS=(
+    --server-url "${ROBOTTRACK_SERVER_URL:-http://127.0.0.1:5801/eval_dual}"
+    --instruction "${ROBOTTRACK_INSTRUCTION:-Follow the person ahead}"
+  )
 fi
 "$PYTHON" "$MANIFEST_RENDERER" \
   --base "$ROOT/robonix_manifest.yaml" \
   --state-marker "$observed_marker" \
   --passive-state-markers "$PASSIVE_SOURCE_MARKERS" \
+  "${MANIFEST_RENDERER_ARGS[@]}" \
   --output "$MANIFEST" >/dev/null
 
 IDENTITY_READY="$RUN_DIR/identity-ready.json"
@@ -828,7 +854,11 @@ fi
 ) >"$RUN_DIR/rbnx-boot.log" 2>&1 &
 BOOT_PID=$!
 
-deadline=$((SECONDS + 60))
+GRAPH_READY_TIMEOUT_SECONDS=60
+if [[ "$ROBOTTRACK_MODE" == true ]]; then
+  GRAPH_READY_TIMEOUT_SECONDS=90
+fi
+deadline=$((SECONDS + GRAPH_READY_TIMEOUT_SECONDS))
 while true; do
   require_state_chain_alive \
     || die 8 "corrected sensor/state chain failed during Robonix startup"
@@ -846,7 +876,7 @@ while true; do
     break
   fi
   (( SECONDS < deadline )) \
-    || die 8 "staged Nav2 graph did not become ready within 60 seconds"
+    || die 8 "staged Nav2 graph did not become ready within ${GRAPH_READY_TIMEOUT_SECONDS} seconds"
   sleep 0.2
 done
 

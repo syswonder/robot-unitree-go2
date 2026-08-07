@@ -1,0 +1,29 @@
+{
+  "captured_at": "2026-08-06T14:21:05+08:00",
+  "hardware_access": {
+    "camera": false,
+    "robot": false,
+    "ros_graph": false
+  },
+  "request": {
+    "image": "upstream/MiniCPM-Robot/MiniCPM-RobotTrack/sim_data/sample/frames/sequence_001/000001.jpg",
+    "instruction": "Walk after the person with a red sports bra and dark blue shorts",
+    "url": "http://127.0.0.1:5801/eval_dual"
+  },
+  "result": {
+    "error": "DINOv3ViTImageProcessorFast requires torchvision to be installed",
+    "model_assets_ready": true,
+    "server_bound_localhost": true,
+    "status": "blocked_missing_dependency"
+  },
+  "torch": {
+    "version": "2.11.0+cu130"
+  },
+  "torchvision_candidate": {
+    "installed": false,
+    "path": ".tools/robottrack-wheel-cache/torchvision-0.26.0+cu130-cp310-cp310-manylinux_2_28_x86_64.whl",
+    "requires_torch": "2.11.0",
+    "sha256": "7d820708732d2467caf2ef16c3ad60c8ff402bd05bd246b108ee080f3fbfdc6e",
+    "version": "0.26.0+cu130"
+  }
+}
