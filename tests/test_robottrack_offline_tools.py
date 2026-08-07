@@ -117,17 +117,62 @@ if sys.argv[1].endswith("verify_robottrack_assets.py"):
         executable.chmod(0o755)
         return executable, trace
 
+    @staticmethod
+    def _launcher_environment(
+        directory: Path,
+        fake_python: Path,
+        trace: Path,
+        **overrides: str,
+    ) -> dict[str, str]:
+        upstream = directory / "upstream" / "MiniCPM-Robot"
+        track_root = upstream / "MiniCPM-RobotTrack"
+        server = (
+            track_root
+            / "realworld"
+            / "sample"
+            / "http_minicpm_robot_track_server.py"
+        )
+        server.parent.mkdir(parents=True)
+        server.write_text("# test fixture\n", encoding="utf-8")
+        (
+            track_root
+            / "minicpm_robot_track"
+            / "checkpoints"
+            / "MiniCPM-RobotTrack"
+        ).mkdir(parents=True)
+        dino = track_root / "minicpm_robot_track" / "backbones" / "dino_local_hf"
+        dino.mkdir(parents=True)
+        for name in (
+            "model.safetensors",
+            "config.json",
+            "preprocessor_config.json",
+            "LICENSE.md",
+        ):
+            (dino / name).write_text("fixture\n", encoding="utf-8")
+        dependencies = directory / "dependencies"
+        dependencies.mkdir()
+
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PYTHON": str(fake_python),
+                "FAKE_TRACE": str(trace),
+                "ROBOTTRACK_UPSTREAM_ROOT": str(upstream),
+                "ROBOTTRACK_PYTHON_DEPS": str(dependencies),
+            }
+        )
+        environment.update(overrides)
+        return environment
+
     def test_launcher_verifies_then_executes_only_official_local_server(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as directory_name:
             directory = Path(directory_name)
             fake_python, trace = self._fake_python(directory)
-            environment = os.environ.copy()
-            environment.update(
-                {
-                    "PYTHON": str(fake_python),
-                    "FAKE_TRACE": str(trace),
-                    "PYTHONPATH": "preserved-entry",
-                }
+            environment = self._launcher_environment(
+                directory,
+                fake_python,
+                trace,
+                PYTHONPATH="preserved-entry",
             )
             completed = subprocess.run(
                 ["bash", str(LAUNCHER)],
@@ -138,11 +183,11 @@ if sys.argv[1].endswith("verify_robottrack_assets.py"):
                 env=environment,
                 timeout=10,
             )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
             records = [
                 json.loads(line)
                 for line in trace.read_text(encoding="utf-8").splitlines()
             ]
-        self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(len(records), 2)
         self.assertTrue(records[0]["argv"][0].endswith("verify_robottrack_assets.py"))
         server_args = records[1]["argv"]
@@ -173,20 +218,21 @@ if sys.argv[1].endswith("verify_robottrack_assets.py"):
         self.assertNotIn("--allow-reverse", server_args)
         self.assertEqual(records[1]["camera_source"], "d435i")
         self.assertEqual(records[1]["offline"], "1")
-        self.assertIn(".tools/robottrack-python", records[1]["pythonpath"])
+        self.assertIn(
+            environment["ROBOTTRACK_PYTHON_DEPS"],
+            records[1]["pythonpath"],
+        )
         self.assertIn("preserved-entry", records[1]["pythonpath"])
 
     def test_controller_can_be_explicitly_restored_to_direct(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as directory_name:
             directory = Path(directory_name)
             fake_python, trace = self._fake_python(directory)
-            environment = os.environ.copy()
-            environment.update(
-                {
-                    "PYTHON": str(fake_python),
-                    "FAKE_TRACE": str(trace),
-                    "ROBOTTRACK_VELOCITY_CONTROLLER": "direct",
-                }
+            environment = self._launcher_environment(
+                directory,
+                fake_python,
+                trace,
+                ROBOTTRACK_VELOCITY_CONTROLLER="direct",
             )
             completed = subprocess.run(
                 ["bash", str(LAUNCHER)],
@@ -197,11 +243,11 @@ if sys.argv[1].endswith("verify_robottrack_assets.py"):
                 env=environment,
                 timeout=10,
             )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
             records = [
                 json.loads(line)
                 for line in trace.read_text(encoding="utf-8").splitlines()
             ]
-        self.assertEqual(completed.returncode, 0, completed.stderr)
         server_args = records[1]["argv"]
         self.assertEqual(
             server_args[server_args.index("--velocity-controller") + 1],
@@ -212,13 +258,11 @@ if sys.argv[1].endswith("verify_robottrack_assets.py"):
         with tempfile.TemporaryDirectory(dir=ROOT) as directory_name:
             directory = Path(directory_name)
             fake_python, trace = self._fake_python(directory)
-            environment = os.environ.copy()
-            environment.update(
-                {
-                    "PYTHON": str(fake_python),
-                    "FAKE_TRACE": str(trace),
-                    "FAKE_VERIFY_STATUS": "1",
-                }
+            environment = self._launcher_environment(
+                directory,
+                fake_python,
+                trace,
+                FAKE_VERIFY_STATUS="1",
             )
             completed = subprocess.run(
                 ["bash", str(LAUNCHER)],
@@ -229,8 +273,8 @@ if sys.argv[1].endswith("verify_robottrack_assets.py"):
                 env=environment,
                 timeout=10,
             )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
             records = trace.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(completed.returncode, 1)
         self.assertEqual(len(records), 1)
         self.assertIn("asset verification failed", completed.stderr)
         self.assertNotIn("download", completed.stdout.lower())
