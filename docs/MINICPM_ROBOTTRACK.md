@@ -1,11 +1,12 @@
 # MiniCPM-RobotTrack 跟随集成
 
-更新时间：2026-08-06（Asia/Shanghai）
+更新时间：2026-08-09（Asia/Shanghai）
 
 ## 当前结论
 
 本仓库已经完成 MiniCPM-RobotTrack 的工作站侧静态集成、策略 checkpoint
-离线验证、D435i 全图像 dry-run、完整正式 45 秒 Go2 实机跟随和后续 75 秒复测。
+离线验证、D435i 全图像 dry-run、完整正式 45/75 秒普通跟随，以及 5 分钟固定距离与
+语音调距实机验收。
 当前路径是：D435i
 只提供 RGB，RTX 4070 工作站运行官方推理服务，Robonix provider 把官方速度响应
 接入已经实机验证的 Go2 单控制器速度链。
@@ -19,12 +20,57 @@
 `DISARMED`。这项结果继续确认了早期“只确认转向、前进不明显”的阶段性
 结论，但早期录包和现场观察仍作为历史证据保留。
 
+2026-08-09 又完成了可选的“前向定距跟随”代码和实机验收。原普通导航和原
+RGB-only 跟随入口均保持不变；只有新入口
+`scripts/start_workstation_robottrack_distance_follow.sh` 会开启 D435i aligned
+depth、人物距离估计和定距纵向控制。该入口每次默认从 `5.0 m` 启动，运行中可在
+`0.5..7.0 m` 内随时调整。
+
+定距模式默认目标为相机到所跟人物 `5.0 m`，可在 `0.5..7.0 m` 内运行时调整；
+死区 `0.10 m`、比例增益 `0.50`、最大前进 `0.50 m/s`。OpenCV HOG 提供单人人物
+框，新目标先经连续两帧一致性确认；确认后可用前后向光流和 RANSAC 在 HOG 短时漏检时
+最多续接 `3` 帧（约 `0.6 s`），但光流不能自行建立目标。框内深度再经过有效率、百分位
+裁剪、中值、MAD、时间和突变检查。它只替换 `vx`，RobotTrack 模型继续提供 `wz`。
+未检测到人物框、目标测距无效、无对齐深度、低置信度、过期测距或过期模型计划均不会产生前进速度。
+检测和深度统计在 latest-only 后台线程执行，不阻塞 ROS 50 Hz dispatch；新 pair 或输入
+失效会推进代际，旧的 in-flight 结果不能恢复已清空的测距，测量有效期也始终按原 pair
+接收时间计算。
+
+保存的 75 秒 RGB bag（`416` 帧，约 `5 Hz`，无 depth）用于人物框回放：旧 HOG 的
+帧覆盖为 `145/416`，当前 384 宽归一化、两帧确认和短时光流链为 `276/416`
+（`66.35%`），远人片段 `384..411` 为 `28/28`，约 `16.5..17.3 ms/frame`。总帧中
+包含无人和人物仅在边缘的区间，所以该比例不是人物可见 recall；回放还发现连续 `8`
+帧空画面误框，RGB 置信度、框尺寸和运动均不能无损区分，因此没有加入猜测阈值。
+下一步必须用真实 aligned depth 核对物理高度和框内/周边深度差后再决定是否过滤。
+
+Robonix 新增 `robonix/primitive/follow/distance` 能力；语义路由支持：
+
+- `离我远一点`：目标距离增加 `1 m`；
+- `靠近一点`：目标距离减少 `1 m`；
+- `保持5米`、`跟随距离设为5米`：直接设置绝对目标。
+
+每次相对口令只下发一次，收到 Executor 反馈后不会重复累加。现有底盘链从 smoother、
+adapter、guard 到 SDK daemon 均明确禁止负 `vx`，所以本轮没有改为主动倒车：人物太近
+时停止向前；“离我远一点”会立即采用更大的目标并等待人物拉开距离；“靠近一点”会
+主动向前缩短间距。这样不改变普通导航/普通跟随已经验证的底盘行为，也没有新增
+审批文件或额外 armed 状态。
+
+`5 m` 已在当前受控场地完成持续跟随，运行时又成功切换 `5 -> 6 -> 5 -> 1 -> 6 m`；
+现场人员确认 `1 m` 近距离与 `6 m` 远距离均达到预期。HOG 与短时光流对远距离小
+目标、背面、遮挡、低光、长时间出画和多人交叉仍可能漏检或丢失，因此这些复杂场景
+仍需专项验证，不能由本次单人受控场地结果外推。
+
 受 DINOv3 License 约束的 ViT-S/16 snapshot 已从 ModelScope 同名镜像补齐。权重
 SHA-256、大小以及两个配置文件均与项目固定的 Hugging Face 参考内容一致；许可证
 也保存在模型目录中。资产校验器通过逐文件 SHA-256 验证镜像，不伪造 Hugging Face
 revision marker，也不会读取或保存 Hugging Face token。
 
-最新正式报告和 rosbag：
+本轮定距报告：
+
+- `docs/reports/2026-08-09/robottrack-fixed-distance-offline-result.md`。
+- `docs/reports/2026-08-09/robottrack-fixed-distance-voice300-physical-result.md`。
+
+最新正式实机报告和 rosbag：
 
 - `docs/reports/2026-08-07/robottrack-speed50-yaw30-classic2010-full75-result.md`；
 - `docs/reports/2026-08-07/robottrack-speed50-yaw30-classic2010-full75-20260807T103423CST-rosbag/`。
@@ -180,6 +226,20 @@ python3 -m unittest -v \
 `0.612235 s` 首次明确进入 `DISARMED`，bag 结束时仍为 `DISARMED`。完整数值、
 bag hash、启动证据和 caveat 以最新正式报告为准。
 
+固定距离最终窗口为 `21:21:02.627771662` 至 `21:26:02.792959212`，长度
+`300.164594791 s`。SDK daemon 保存了 `11,657` 条实际 `Move` 请求，跨度
+`299.821889 s`、约 `38.876 Hz`，无大于 `0.1 s` 的断流；`vx` 位于
+`0..0.50 m/s`，`wz` 位于 `-0.30..+0.30 rad/s`，底盘会话累计运动
+`16.9967 m`。语音和显式距离指令在窗口内成功完成
+`5 -> 6 -> 5 -> 1 -> 6 -> 5 m`；用户确认 1 米与 6 米均为主动验收项，最后一步
+只把当次运行目标回到 5 米；下次新启动仍由启动配置独立默认 5 米。窗口内无底盘
+故障或 OOM，结束后原停止链在 `0.596 s` 内完成，最终状态为 `DISARMED`。
+
+本次 5 分钟 rosbag 因预检目录重名没有启动，现存 3.980 秒短包不属于正式窗口，
+因此不提供虚假的五分钟 odom/topic 统计。正式结果依据事件、provider、Pilot、
+Executor、chassis adapter 和 SDK daemon 日志；完整证据边界见定距实机报告。测试记录
+命名已改用秒和毫秒，避免快速重试再次复用目录。
+
 ## 完整图像推理服务
 
 DINOv3、SigLIP 和 RobotTrack checkpoint 已完整放在工作区。Hugging Face 访问申请
@@ -202,12 +262,17 @@ bash scripts/start_robottrack_inference_server.sh
 ## 后续通电时的使用顺序
 
 1. 按原 handoff 恢复已经跑通的 D435i RGB ROS topic
-   `/go2/d435i/color/image_raw`；depth 和 IMU 不输入模型。
+   `/go2/d435i/color/image_raw`。普通跟随仍只把 RGB 输入模型；定距 profile 另外读取
+   `/go2/d435i/aligned_depth_to_color/image_raw` 计算目标间距，IMU 不输入模型。
 2. 先运行官方推理服务，确认 D435i raw、模型输入和 overlay 更新。已通过的
    full-image、转向和完整 45 秒前进跟随不需要机械重复；只核对本次启动状态。
 3. 使用原 generation 1 persistent 全栈的同一组当前 map/interface/runtime 参数，
    运行 `scripts/start_workstation_robottrack_follow.sh`。这个 wrapper 只选择 RobotTrack
    manifest，不创建新审批或新 armed 状态。
+   需要定距时改用 `scripts/start_workstation_robottrack_distance_follow.sh`；默认 `5 m`，
+   可在启动该入口前用 `ROBOTTRACK_TARGET_DISTANCE_M` 改初始值。定距入口会省略跟随
+   与语音调距不使用的 Scene system，避免本机 15 GiB 内存下的 OOM；Mapping、Nav2、
+   平滑/guard、底盘、D435i、speech 和 Robonix 调度链仍保留。两个入口互相独立。
 4. 继续使用现有遥控器/App 接管、StopMove、取消和底盘 watchdog。前进、转向、
    模型加载、网页画面和速度链均已有正式证据，不必从零重做。只有用户继续要求时，
    再测目标丢失、重入、遮挡、光照和多人动态场景。
@@ -224,6 +289,11 @@ Orin 当前是 JetPack 5.1.1 / L4T R35.3.1。不要把已缓存的 JetPack 6 ARM
 - Robonix/ROS provider：`packages/go2_robottrack/`；
 - manifest renderer：`deploy/time-sync/render_workstation_robottrack_manifest.py`；
 - 跟随 wrapper：`scripts/start_workstation_robottrack_follow.sh`；
+- 定距跟随 wrapper：`scripts/start_workstation_robottrack_distance_follow.sh`；
+- 定距控制、RGB-D 距离与运行时能力：
+  `packages/go2_robottrack/go2_robottrack/distance_control.py`、
+  `rgbd_distance.py`、`distance_worker.py`、`follow_distance_runtime.py`；
+- 语音调距解析/路由：`packages/semantic_intent_router/semantic_intent_router/`；
 - 官方服务 wrapper：`scripts/start_robottrack_inference_server.sh`；
 - checkpoint smoke：`scripts/robottrack_checkpoint_smoke.py`；
 - 资产清单与验证：`config/robottrack_assets.yaml`、
