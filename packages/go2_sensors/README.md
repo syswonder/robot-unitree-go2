@@ -24,14 +24,33 @@ The paths above show the root deployment override. The package-only default is
 `/sensors/imu/data`; the provider always declares the endpoint actually
 selected by its delivered config.
 
-The lidar relay copies the complete `PointCloud2` message, including its
-original timestamp and `frame_id`. The IMU relay also copies the complete
-message; `imu.frame_override` is empty by default and should only be set when
-the installed URDF uses a verified equivalent frame name.
+Before publishing either standard output, the relay compares the input ROS
+header timestamp with its ROS clock. A zero timestamp, malformed timestamp,
+sample older than the configured maximum, or sample farther in the future than
+the configured tolerance is rejected. Rejected data never reaches
+`/scanner/cloud` or the standardized IMU output. The lidar relay otherwise
+copies the complete `PointCloud2` message, including its original timestamp and
+`frame_id`. The IMU relay also copies the complete message;
+`imu.frame_override` is empty by default and should only be set when the
+installed URDF uses a verified equivalent frame name.
 
-Both ROS nodes report topic names, frame IDs, observed rates, sample counts,
-age, rejected frames, connection state, and calibration state through
-`diagnostic_msgs/DiagnosticArray` on `/go2/sensors/status`.
+The checked-in navigation-oriented limits are conservative: lidar may be at
+most 0.50 s old, IMU at most 0.20 s old, and either may lead the local clock by
+at most 0.05 s. Configure them independently with
+`lidar.max_stamp_age_seconds`, `lidar.max_future_stamp_offset_seconds`,
+`imu.max_stamp_age_seconds`, and `imu.max_future_stamp_offset_seconds`. Fix a
+clock-synchronization fault instead of widening these bounds to admit delayed
+or replayed data. Runtime overrides may tighten these four limits but cannot
+raise them above the checked-in ceilings; an attempted widening makes the
+relay fail at startup.
+
+Both ROS nodes report topic names, frame IDs, observed rates, received and
+published sample counts, age, rejected frames, connection state, and
+calibration state through `diagnostic_msgs/DiagnosticArray` on
+`/go2/sensors/status`. Timestamp rejection counters distinguish zero, stale,
+future, and malformed stamps. A rejection produces at least one `ERROR`
+diagnostic interval; a continuously invalid stream remains in `ERROR` until a
+fresh sample is accepted.
 
 ## Why the camera uses two processes
 
@@ -53,16 +72,42 @@ therefore deliberate:
   credentials before reading.
 
 The protocol is fixed-width little-endian framing over `SOCK_STREAM`. Every
-frame carries magic, version, monotonically increasing sequence, realtime and
-monotonic timestamps, and a bounded payload length. The bridge rejects unknown
-versions, reserved bits, oversized data, non-increasing sequences, stale
-timestamps, malformed JPEG boundaries, decode failures, and images beyond the
-configured dimensions. It reconnects after a bounded read timeout.
+record carries magic, version, monotonically increasing sequence, realtime and
+monotonic timestamps, bounded payload length, and cumulative API acceptance,
+source rejection, API error, and IPC connection counters. Error/status records
+carry no JPEG payload. The bridge rejects unknown versions, reserved bits,
+oversized data, non-increasing sequences, stale timestamps, malformed complete
+JPEG marker streams, libjpeg warnings/failures, and images beyond the configured
+dimensions. Only a fully decoded image reaches ROS. It reconnects after a
+bounded read timeout.
+
+The bridge drains complete IPC records on a dedicated reader thread and hands
+them to JPEG decode/ROS publication through a one-frame latest-value mailbox.
+If decode or a downstream ROS path is slower than acquisition, a newly received
+complete frame replaces the single pending frame; an older frame is also
+dropped before processing if its connection has been invalidated. Once a valid
+in-flight frame is being decoded it is allowed to complete, avoiding permanent
+publication starvation when decode is consistently slower than acquisition;
+connection generation and the original 2 s timestamp freshness are checked
+again after decode. This prevents the Unix stream from acting as an
+unbounded-latency FIFO while preserving the original capture timestamp.
+Connection changes and shutdown invalidate pending work. The image publisher
+is best-effort/volatile with `keep_last(1)`, and diagnostics expose
+`superseded_count` and `pending_frame_depth` so overload remains visible without
+weakening the 2 s freshness gate.
+
+The first physical read-only camera probe was not stable enough for navigation:
+it observed roughly 1.88 valid frames/s, malformed or oversized JPEG samples,
+IPC reconnects, and vendor API return code `3104`. That number is retained as
+an opaque diagnostic value; this repository does not infer its meaning. The
+quality diagnostic therefore fails closed on a stale stream, a valid rate below
+1.0 Hz, or an API/rejection ratio above 20% over the bounded 10 s window. The UI
+shows the measured valid rate, rejection ratio, and gate result.
 
 ## Dependencies and build
 
 Required ROS packages are `rclcpp`, `sensor_msgs`, `std_msgs`,
-`diagnostic_msgs`, `cv_bridge`, OpenCV, `ament_cmake`, and `launch_ros`. The
+`diagnostic_msgs`, `cv_bridge`, OpenCV, libjpeg, `ament_cmake`, and `launch_ros`. The
 camera daemon additionally needs a local official `unitree_sdk2` checkout.
 Neither build helper installs packages or uses sudo.
 
@@ -134,6 +179,23 @@ activation fails closed if either camera process or its fresh outputs are
 missing. The standalone `enable_camera:=false` command above is only a local
 ROS lidar/IMU diagnostic mode; it is not a valid Robonix package activation.
 
+The provider has two exact `source_mode` values:
+
+- `local` is the default and preserves the original behavior: it owns and
+  starts `go2_sensor_relay`, `go2_camera_daemon`, and `go2_camera_bridge`.
+- `external` starts none of those three publisher processes and does not
+  require their local runtime artifacts. It waits for the standardized
+  PointCloud2, IMU, Image, and CameraInfo topics from the NX, then registers
+  those same topic contracts with Atlas. Missing samples fail activation.
+
+Do not set `source_mode` directly in normal deployment. Root
+`GO2_RUNTIME_PLACEMENT=workstation-full-nx-sensors` derives it as `external`
+and first verifies one NX publisher for both camera topics, `/scanner/cloud`
+and `/scanner/imu`, with no existing `/odom` or `/tf_static` publisher. The NX
+must have been started using `--sensors-only --camera`; its default full mode
+also owns odometry and TF and is intentionally rejected by that workstation
+placement.
+
 ## Parameters and safe defaults
 
 The checked-in defaults are in `config/go2_sensors.yaml`:
@@ -141,11 +203,16 @@ The checked-in defaults are in `config/go2_sensors.yaml`:
 - lidar: `/utlidar/cloud` to `/scanner/cloud`;
 - IMU: `/imu/data` to `/scanner/imu` in the root deployment
   (`/sensors/imu/data` package-only default);
+- lidar stamp age/future limits: 0.50 s / 0.05 s;
+- IMU stamp age/future limits: 0.20 s / 0.05 s;
 - camera: `/camera/color/image_raw` plus matching `CameraInfo`;
 - maximum JPEG: 4 MiB, absolute protocol ceiling 16 MiB;
 - maximum decoded image: 4096 × 4096;
 - IPC read timeout: 1.5 s;
 - maximum camera frame age: 2 s;
+- quality window: 10 s after a 5 s startup grace period;
+- minimum valid camera rate: 1.0 Hz;
+- maximum source/API/strict-decode rejection ratio: 20%;
 - diagnostics publish period: 1 s.
 
 Input and output topics must be absolute and must differ, preventing accidental
@@ -166,10 +233,11 @@ verified sensor extrinsics where required) are installed and validated.
 ## Offline verification
 
 The offline suite compiles no ROS code, opens no network device, and contacts
-no robot. It validates protocol encoding/rejection/stream framing/timeouts and
-statically enforces the process boundary and absence of control surfaces. If
-`cmake` is available, it also configures (but does not build) the standalone
-camera graph and verifies that Unitree examples remain forced off:
+no robot. It validates protocol encoding/rejection/stream framing/timeouts, the
+single-slot latest-frame overload behavior, and statically enforces the process
+boundary and absence of control surfaces. If `cmake` is available, it also
+configures (but does not build) the standalone camera graph and verifies that
+Unitree examples remain forced off:
 
 ```bash
 bash tests/run_offline_tests.sh

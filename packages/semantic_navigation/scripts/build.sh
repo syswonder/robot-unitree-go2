@@ -2,6 +2,9 @@
 set -euo pipefail
 
 PKG="${RBNX_PACKAGE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+DEPLOY_ROOT="${ROBONIX_DEPLOY_DIR:-$(cd "$PKG/../.." && pwd)}"
+# shellcheck disable=SC1091
+source "$DEPLOY_ROOT/scripts/build_robonix_ros2_overlay.sh"
 cd "$PKG"
 rbnx codegen -p "$PKG" --mcp --ros2
 
@@ -25,5 +28,6 @@ IDL="$PKG/rbnx-build/codegen/ros2_idl"
   echo "generated map/msg/MapLifecycle package is missing: $IDL/src/map" >&2
   exit 2
 }
-(cd "$IDL" && colcon build --packages-up-to map)
+robonix_build_ros2_overlay "$IDL" \
+  --packages-select lifecycle semantic_navigation map
 python3 -m unittest discover -s tests -p 'test_*.py'

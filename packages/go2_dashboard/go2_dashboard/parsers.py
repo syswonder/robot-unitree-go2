@@ -199,23 +199,30 @@ def image_to_rgb_bytes(
 
     output = bytearray(width * height * 3)
     target = 0
+    packed_source_row = width * channels
+    packed_target_row = width * 3
     for row_index in range(height):
-        row = view[row_index * step : row_index * step + width * channels]
+        row = view[
+            row_index * step : row_index * step + packed_source_row
+        ]
         if encoding_key == "rgb8":
-            size = width * 3
-            output[target : target + size] = row
-            target += size
+            output[target : target + packed_target_row] = row
+            target += packed_target_row
             continue
-        for pixel_index in range(width):
-            source = pixel_index * channels
-            if encoding_key == "mono8":
-                red = green = blue = row[source]
-            elif encoding_key in {"bgr8", "bgra8"}:
-                blue, green, red = row[source : source + 3]
-            else:
-                red, green, blue = row[source : source + 3]
-            output[target : target + 3] = bytes((red, green, blue))
-            target += 3
+        row_end = target + packed_target_row
+        if encoding_key == "mono8":
+            output[target:row_end:3] = row
+            output[target + 1 : row_end : 3] = row
+            output[target + 2 : row_end : 3] = row
+        elif encoding_key in {"bgr8", "bgra8"}:
+            output[target:row_end:3] = row[2:packed_source_row:channels]
+            output[target + 1 : row_end : 3] = row[1:packed_source_row:channels]
+            output[target + 2 : row_end : 3] = row[0:packed_source_row:channels]
+        else:  # rgba8
+            output[target:row_end:3] = row[0:packed_source_row:channels]
+            output[target + 1 : row_end : 3] = row[1:packed_source_row:channels]
+            output[target + 2 : row_end : 3] = row[2:packed_source_row:channels]
+        target = row_end
     return bytes(output)
 
 

@@ -7,9 +7,10 @@ PID_FILE="${ROOT_DIR}/rbnx-build/run/provider.pid"
 ROS_SETUP_FILE="${ROS_SETUP_FILE:-/opt/ros/humble/setup.bash}"
 
 echo "================================================================"
-echo "  READ-ONLY GO2 DASHBOARD SERVICE"
+echo "  GO2 TELEMETRY + OPTIONAL LIAISON VOICE SERVICE"
 echo "  Provider id: go2_dashboard"
-echo "  Status-only capability; no robot command interface."
+echo "  Telemetry is read-only; browser voice is disabled by default."
+echo "  Voice delegates only to Liaison and NEVER authorizes robot motion."
 echo "================================================================"
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then

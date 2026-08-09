@@ -10,7 +10,24 @@ ROOT = Path(__file__).resolve().parents[1]
 ROS_FILES = [ROOT / "src" / "sensor_relay_node.cpp", ROOT / "src" / "camera_bridge_node.cpp"]
 DAEMON_FILE = ROOT / "camera_daemon" / "src" / "camera_daemon.cpp"
 PROVIDER_FILE = ROOT / "go2_sensors_provider" / "main.py"
-PRODUCTION_FILES = ROS_FILES + [DAEMON_FILE, PROVIDER_FILE]
+STAMP_GUARD_FILE = ROOT / "include" / "go2_sensors" / "stamp_guard.hpp"
+LATEST_FRAME_FILE = ROOT / "include" / "go2_sensors" / "latest_frame_mailbox.hpp"
+ERROR_WATERMARK_FILE = ROOT / "include" / "go2_sensors" / "camera_error_watermark.hpp"
+JPEG_DECODER_FILES = [
+    ROOT / "include" / "go2_sensors" / "strict_jpeg_decoder.hpp",
+    ROOT / "src" / "strict_jpeg_decoder.cpp",
+]
+PRODUCTION_FILES = (
+    ROS_FILES
+    + [
+        DAEMON_FILE,
+        PROVIDER_FILE,
+        STAMP_GUARD_FILE,
+        LATEST_FRAME_FILE,
+        ERROR_WATERMARK_FILE,
+    ]
+    + JPEG_DECODER_FILES
+)
 
 
 def fail(message: str) -> None:
@@ -57,6 +74,9 @@ if unitree_headers != expected_unitree_headers:
 ros_cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
 if "unitree_sdk2" in ros_cmake:
     fail("ROS CMake target links Unitree SDK")
+for jpeg_contract in ("find_package(JPEG REQUIRED)", "JPEG::JPEG", "strict_jpeg_decoder.cpp"):
+    if jpeg_contract not in ros_cmake:
+        fail(f"strict JPEG decoder build contract is missing: {jpeg_contract}")
 daemon_cmake = (ROOT / "camera_daemon" / "CMakeLists.txt").read_text(encoding="utf-8")
 for ros_dependency in ("rclcpp", "sensor_msgs", "cv_bridge", "ament"):
     if ros_dependency in daemon_cmake:
@@ -128,6 +148,52 @@ if "require_camera" in provider_text or "camera_calibrated" in provider_text:
     fail("Robonix provider must not make a manifest capability optional at runtime")
 if "robonix/primitive/camera/intrinsics" in provider_text:
     fail("uncalibrated CameraInfo must not be advertised as an intrinsics capability")
+
+relay_text = ROS_FILES[0].read_text(encoding="utf-8")
+for freshness_contract in (
+    'declare_stamp_policy("lidar", 0.50, 0.05)',
+    'declare_stamp_policy("imu", 0.20, 0.05)',
+    'prefix + ".max_stamp_age_seconds"',
+    'prefix + ".max_future_stamp_offset_seconds"',
+    "evaluate_header_stamp",
+    "stamp_policy_within_limits",
+    '" stamp freshness thresholds may only be tightened; "',
+    "rejected_zero_stamp_count",
+    "rejected_stale_stamp_count",
+    "rejected_future_stamp_count",
+    "rejected_invalid_stamp_count",
+):
+    if freshness_contract not in relay_text:
+        fail(f"sensor timestamp rejection contract is missing: {freshness_contract}")
+if relay_text.count("if (!accept_fresh_stamp(") != 2:
+    fail("both PointCloud2 and Imu relays must gate publication on a fresh header stamp")
+
+camera_bridge_text = ROS_FILES[1].read_text(encoding="utf-8")
+for latest_frame_contract in (
+    "LatestFrameMailbox latest_frame_",
+    "processor_ = std::thread",
+    "latest_frame_.put(std::move(frame))",
+    "state_.last_error.clear_if_recovered_by(",
+    "qos.keep_last(1)",
+    '"superseded_count"',
+    '"pending_frame_depth"',
+):
+    if latest_frame_contract not in camera_bridge_text:
+        fail(f"camera latest-frame backpressure contract is missing: {latest_frame_contract}")
+
+sensor_config = yaml.safe_load((ROOT / "config" / "go2_sensors.yaml").read_text(encoding="utf-8"))
+relay_config = sensor_config["go2_sensor_relay"]["ros__parameters"]
+expected_freshness = {
+    ("lidar", "max_stamp_age_seconds"): 0.50,
+    ("lidar", "max_future_stamp_offset_seconds"): 0.05,
+    ("imu", "max_stamp_age_seconds"): 0.20,
+    ("imu", "max_future_stamp_offset_seconds"): 0.05,
+}
+for (stream, parameter), expected in expected_freshness.items():
+    actual = relay_config[stream].get(parameter)
+    if actual != expected:
+        fail(f"unexpected {stream}.{parameter}: {actual!r}")
+
 build_text = (ROOT / "build.sh").read_text(encoding="utf-8")
 if 'rbnx codegen -p "${ROOT}" --ros2' not in build_text:
     fail("build does not generate the canonical Robonix ROS 2 message overlay")

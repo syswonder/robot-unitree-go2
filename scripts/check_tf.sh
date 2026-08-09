@@ -49,7 +49,7 @@ mkdir -p -- "${OUTPUT_DIR}/details"
 umask 077
 
 timeout --signal=INT --kill-after=2s "${TOPIC_TIMEOUT}s" \
-  ros2 topic list -t >"${OUTPUT_DIR}/all-topics.txt" 2>"${OUTPUT_DIR}/topic-discovery.stderr.txt"
+  ros2 topic list --no-daemon -t >"${OUTPUT_DIR}/all-topics.txt" 2>"${OUTPUT_DIR}/topic-discovery.stderr.txt"
 discovery_status=$?
 if (( discovery_status != 0 )); then
   printf 'TF 话题发现失败或超时（状态 %d）。\n' "${discovery_status}" >&2
@@ -70,7 +70,7 @@ for topic in /tf /tf_static; do
   safe_name="${topic#/}"
 
   timeout --signal=INT --kill-after=2s "${TOPIC_TIMEOUT}s" \
-    ros2 topic info --verbose "${topic}" >"${OUTPUT_DIR}/details/${safe_name}.info.txt" 2>&1
+    ros2 topic info --no-daemon --verbose "${topic}" >"${OUTPUT_DIR}/details/${safe_name}.info.txt" 2>&1
   info_status=$?
 
   timeout --signal=INT --kill-after=2s "${TOPIC_TIMEOUT}s" \
@@ -79,11 +79,11 @@ for topic in /tf /tf_static; do
 
   if [[ "${topic}" == "/tf_static" ]]; then
     timeout --signal=INT --kill-after=2s "${ECHO_TIMEOUT}s" \
-      ros2 topic echo --once --qos-durability transient_local "${topic}" \
+      ros2 topic echo --no-daemon --once --qos-durability transient_local "${topic}" \
       >"${OUTPUT_DIR}/details/${safe_name}.sample.txt" 2>&1
   else
     timeout --signal=INT --kill-after=2s "${ECHO_TIMEOUT}s" \
-      ros2 topic echo --once "${topic}" \
+      ros2 topic echo --no-daemon --once "${topic}" \
       >"${OUTPUT_DIR}/details/${safe_name}.sample.txt" 2>&1
   fi
   echo_status=$?

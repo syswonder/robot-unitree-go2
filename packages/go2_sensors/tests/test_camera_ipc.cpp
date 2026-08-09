@@ -23,6 +23,13 @@ void test_header_round_trip()
   input.payload_bytes = 12345U;
   input.width_hint = 1280U;
   input.height_hint = 720U;
+  input.api_request_count = 8U;
+  input.api_accepted_count = 6U;
+  input.source_rejected_count = 1U;
+  input.api_error_count = 1U;
+  input.ipc_connection_count = 3U;
+  input.ipc_disconnect_count = 2U;
+  input.last_api_code = 3104;
   const auto encoded = ipc::encode_header(input);
   assert(encoded.size() == ipc::kHeaderBytes);
 
@@ -34,6 +41,13 @@ void test_header_round_trip()
   assert(output.payload_bytes == input.payload_bytes);
   assert(output.width_hint == input.width_hint);
   assert(output.height_hint == input.height_hint);
+  assert(output.api_request_count == input.api_request_count);
+  assert(output.api_accepted_count == input.api_accepted_count);
+  assert(output.source_rejected_count == input.source_rejected_count);
+  assert(output.api_error_count == input.api_error_count);
+  assert(output.ipc_connection_count == input.ipc_connection_count);
+  assert(output.ipc_disconnect_count == input.ipc_disconnect_count);
+  assert(output.last_api_code == input.last_api_code);
 }
 
 void test_header_rejections()
@@ -50,7 +64,7 @@ void test_header_rejections()
   modified[0] ^= 0xffU;
   assert(ipc::decode_header(modified, 1024U, output) == ipc::HeaderError::kBadMagic);
   modified = valid;
-  modified[4] = 2U;
+  modified[4] = 3U;
   assert(ipc::decode_header(modified, 1024U, output) == ipc::HeaderError::kBadVersion);
   modified = valid;
   ipc::put_u16(modified.data() + 6U, 47U);
@@ -69,10 +83,37 @@ void test_header_rejections()
   assert(ipc::decode_header(modified, 1024U, output) == ipc::HeaderError::kMissingMonotonicStamp);
   modified = valid;
   ipc::put_u32(modified.data() + 36U, 1U);
+  assert(ipc::decode_header(modified, 1024U, output) == ipc::HeaderError::kUnexpectedPayload);
+  modified = valid;
+  ipc::put_u32(modified.data() + 36U, 2U);
   assert(ipc::decode_header(modified, 1024U, output) == ipc::HeaderError::kReservedBitsSet);
   modified = valid;
   ipc::put_u32(modified.data() + 44U, 1U);
   assert(ipc::decode_header(modified, 1024U, output) == ipc::HeaderError::kReservedBitsSet);
+
+  modified = valid;
+  ipc::put_u64(modified.data() + 48U, 1U);
+  assert(ipc::decode_header(modified, 1024U, output) == ipc::HeaderError::kInconsistentCounters);
+}
+
+void test_status_record()
+{
+  ipc::FrameHeader input;
+  input.sequence = 4U;
+  input.capture_realtime_ns = 5U;
+  input.capture_monotonic_ns = 6U;
+  input.flags = ipc::kStatusOnly;
+  input.api_request_count = 10U;
+  input.api_accepted_count = 7U;
+  input.source_rejected_count = 2U;
+  input.api_error_count = 1U;
+  input.last_api_code = 3104;
+  const auto encoded = ipc::encode_header(input);
+  ipc::FrameHeader output;
+  assert(ipc::decode_header(encoded, 1024U, output) == ipc::HeaderError::kOk);
+  assert(output.payload_bytes == 0U);
+  assert(output.flags == ipc::kStatusOnly);
+  assert(output.last_api_code == 3104);
 }
 
 void test_jpeg_boundaries()
@@ -100,6 +141,24 @@ void test_jpeg_dimensions()
   auto invalid = jpeg;
   invalid[5] = 0xffU;
   assert(!ipc::jpeg_dimensions(invalid.data(), invalid.size(), width, height));
+}
+
+void test_complete_jpeg_structure()
+{
+  const std::array<std::uint8_t, 28> jpeg{
+    0xffU, 0xd8U,
+    0xffU, 0xc0U, 0x00U, 0x0bU, 0x08U, 0x02U, 0xd0U, 0x05U, 0x00U,
+    0x01U, 0x01U, 0x11U, 0x00U,
+    0xffU, 0xdaU, 0x00U, 0x08U, 0x01U, 0x01U, 0x00U, 0x00U, 0x3fU, 0x00U,
+    0x01U, 0xffU, 0xd9U};
+  std::uint16_t width = 0U;
+  std::uint16_t height = 0U;
+  assert(ipc::jpeg_structure_is_valid(jpeg.data(), jpeg.size(), width, height));
+  assert(width == 1280U);
+  assert(height == 720U);
+  auto invalid = jpeg;
+  invalid[26] = 0x01U;
+  assert(!ipc::jpeg_structure_is_valid(invalid.data(), invalid.size(), width, height));
 }
 
 void test_stream_framing()
@@ -154,8 +213,10 @@ int main()
 {
   test_header_round_trip();
   test_header_rejections();
+  test_status_record();
   test_jpeg_boundaries();
   test_jpeg_dimensions();
+  test_complete_jpeg_structure();
   test_stream_framing();
   test_read_timeout();
   std::cout << "camera IPC protocol tests passed\n";

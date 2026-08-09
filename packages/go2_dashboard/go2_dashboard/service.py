@@ -1,4 +1,4 @@
-"""Robonix service provider that owns the read-only dashboard child."""
+"""Robonix provider owning telemetry and optional Liaison voice UI child."""
 
 from __future__ import annotations
 

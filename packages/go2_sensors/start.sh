@@ -7,9 +7,22 @@ ROS_SETUP="/opt/ros/${ROS_DISTRO}/setup.bash"
 ROBONIX_IDL_SETUP="${ROOT}/rbnx-build/codegen/ros2_idl/install/setup.bash"
 LOCAL_SETUP="${GO2_SENSORS_BUILD_ROOT:-${ROOT}/.build/ros}/install/setup.bash"
 PROTO_STUB="${ROOT}/rbnx-build/codegen/proto_gen/atlas_pb2.py"
+SENSOR_SOURCE_MODE="${GO2_SENSOR_SOURCE_MODE:-local}"
 
-if [[ ! -r "${ROS_SETUP}" || ! -r "${ROBONIX_IDL_SETUP}" || ! -r "${LOCAL_SETUP}" ]]; then
-  echo "ROS 2, the Robonix message overlay, or the local sensor build is unavailable." >&2
+case "${SENSOR_SOURCE_MODE}" in
+  local|external) ;;
+  *)
+    echo "GO2_SENSOR_SOURCE_MODE must be exactly 'local' or 'external'." >&2
+    exit 1
+    ;;
+esac
+
+if [[ ! -r "${ROS_SETUP}" || ! -r "${ROBONIX_IDL_SETUP}" ]]; then
+  echo "ROS 2 or the Robonix message overlay is unavailable." >&2
+  exit 1
+fi
+if [[ "${SENSOR_SOURCE_MODE}" == local && ! -r "${LOCAL_SETUP}" ]]; then
+  echo "The local sensor build is unavailable in local source mode." >&2
   exit 1
 fi
 if [[ ! -r "${PROTO_STUB}" ]]; then
@@ -32,8 +45,10 @@ set +u
 source "${ROS_SETUP}"
 # shellcheck disable=SC1090
 source "${ROBONIX_IDL_SETUP}"
-# shellcheck disable=SC1090
-source "${LOCAL_SETUP}"
+if [[ "${SENSOR_SOURCE_MODE}" == local ]]; then
+  # shellcheck disable=SC1090
+  source "${LOCAL_SETUP}"
+fi
 set -u
 
 export PYTHONPATH="${ROBONIX_API_ROOT}:${ROOT}:${ROOT}/rbnx-build/codegen/proto_gen:${PYTHONPATH:-}"
@@ -41,5 +56,10 @@ export PYTHONPATH="${ROBONIX_API_ROOT}:${ROOT}:${ROOT}/rbnx-build/codegen/proto_
 echo "============================================================"
 echo " READ-ONLY GO2 SENSOR PROVIDER"
 echo " No chassis or robot-control interface is opened by this package."
+if [[ "${SENSOR_SOURCE_MODE}" == external ]]; then
+  echo " EXTERNAL/NX MODE: no local relay, camera daemon, or bridge is started."
+else
+  echo " LOCAL MODE: this provider owns the relay and camera publishers."
+fi
 echo "============================================================"
 exec python3 -m go2_sensors_provider.main
