@@ -20,6 +20,8 @@ MOTION_ACK=I_APPROVE_GO2_STAGED_NAV2_MOTION
 STANDARD_MODE="${GO2_STAGED_NAV2_STANDARD_MODE:-true}"
 PERSISTENT_MODE="${GO2_PERSISTENT_NAV2_MODE:-false}"
 ROBOTTRACK_MODE="${GO2_ROBOTTRACK_MODE:-false}"
+ROBOTTRACK_DISTANCE_MODE="${GO2_ROBOTTRACK_DISTANCE_MODE:-false}"
+ROBOTTRACK_LEAN_MODE="${GO2_ROBOTTRACK_LEAN_MODE:-false}"
 ROBOTTRACK_MAX_LINEAR_MPS=0.50
 WIRELESS_INTERFACE=wlx500ff54809b8
 WIRELESS_CONNECTION_NAME=Robonix-Go2
@@ -70,11 +72,23 @@ case "$ROBOTTRACK_MODE" in
   true|false) ;;
   *) die 2 "GO2_ROBOTTRACK_MODE must be true or false" ;;
 esac
+case "$ROBOTTRACK_DISTANCE_MODE" in
+  true|false) ;;
+  *) die 2 "GO2_ROBOTTRACK_DISTANCE_MODE must be true or false" ;;
+esac
+case "$ROBOTTRACK_LEAN_MODE" in
+  true|false) ;;
+  *) die 2 "GO2_ROBOTTRACK_LEAN_MODE must be true or false" ;;
+esac
 [[ "$PERSISTENT_MODE" == false || "$STANDARD_MODE" == true ]] \
   || die 2 "persistent Nav2 requires standard mode"
 [[ "$ROBOTTRACK_MODE" == false \
   || ( "$PERSISTENT_MODE" == true && "$STANDARD_MODE" == true ) ]] \
   || die 2 "RobotTrack requires persistent standard mode"
+[[ "$ROBOTTRACK_DISTANCE_MODE" == false || "$ROBOTTRACK_MODE" == true ]] \
+  || die 2 "fixed-distance following requires RobotTrack mode"
+[[ "$ROBOTTRACK_LEAN_MODE" == false || "$ROBOTTRACK_MODE" == true ]] \
+  || die 2 "lean following requires RobotTrack mode"
 
 if [[ "$STANDARD_MODE" == true && -z "${GO2_TIMESTAMP_APPROVAL_FILE:-}" ]]; then
   while IFS= read -r candidate; do
@@ -534,6 +548,15 @@ if [[ "$ROBOTTRACK_MODE" == true ]]; then
     --server-url "${ROBOTTRACK_SERVER_URL:-http://127.0.0.1:5801/eval_dual}"
     --instruction "${ROBOTTRACK_INSTRUCTION:-Follow the person ahead}"
   )
+  if [[ "$ROBOTTRACK_DISTANCE_MODE" == true ]]; then
+    MANIFEST_RENDERER_ARGS+=(
+      --distance-enabled
+      --target-distance-m "${ROBOTTRACK_TARGET_DISTANCE_M:-5.0}"
+    )
+  fi
+  if [[ "$ROBOTTRACK_LEAN_MODE" == true ]]; then
+    MANIFEST_RENDERER_ARGS+=(--omit-scene)
+  fi
 fi
 "$PYTHON" "$MANIFEST_RENDERER" \
   --base "$ROOT/robonix_manifest.yaml" \
@@ -855,7 +878,7 @@ fi
 BOOT_PID=$!
 
 GRAPH_READY_TIMEOUT_SECONDS=60
-if [[ "$ROBOTTRACK_MODE" == true ]]; then
+if [[ "$PERSISTENT_MODE" == true ]]; then
   GRAPH_READY_TIMEOUT_SECONDS=90
 fi
 deadline=$((SECONDS + GRAPH_READY_TIMEOUT_SECONDS))

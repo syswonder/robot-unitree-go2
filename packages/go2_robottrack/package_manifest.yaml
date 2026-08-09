@@ -15,5 +15,7 @@ start: bash start.sh
 capabilities:
   - name: robonix/primitive/follow/driver
     path: capabilities/driver.v1.toml
+  - name: robonix/primitive/follow/distance
+    path: capabilities/distance.v1.toml
 
 depends: []

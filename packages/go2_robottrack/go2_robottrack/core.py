@@ -61,12 +61,38 @@ def _positive_float(value: Any, name: str, default: float, maximum: float) -> fl
     return result
 
 
+def _bounded_float(
+    value: Any,
+    name: str,
+    default: float,
+    *,
+    minimum: float,
+    maximum: float,
+    include_minimum: bool = True,
+) -> float:
+    result = _finite_float(default if value is None else value, name)
+    minimum_ok = result >= minimum if include_minimum else result > minimum
+    if not minimum_ok or result > maximum:
+        bracket = "[" if include_minimum else "("
+        raise ValueError(f"{name} must be in {bracket}{minimum}, {maximum}]")
+    return result
+
+
+def _explicit_bool(value: Any, name: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{name} must be a bool")
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     """Normalized runtime settings shared by ROS and the Robonix provider."""
 
     mode: str = "dry-run"
     rgb_topic: str = "/go2/d435i/color/image_raw"
+    depth_topic: str = "/go2/d435i/aligned_depth_to_color/image_raw"
     command_topic: str = "/go2/robottrack/cmd_vel_raw"
     server_url: str = "http://127.0.0.1:5801/eval_dual"
     instruction: str = "Follow the person ahead"
@@ -85,6 +111,21 @@ class RuntimeConfig:
     selected_output_topic: str = "/cmd_vel_nav"
     selected_source: str = "robottrack"
     source_max_age_s: float = 0.25
+    # Fixed-distance following is an opt-in layer over the already validated
+    # RGB-only RobotTrack path.  Keeping this false preserves ordinary follow
+    # byte-for-byte at the command boundary.
+    distance_enabled: bool = False
+    target_distance_m: float = 5.0
+    min_target_distance_m: float = 0.5
+    max_target_distance_m: float = 7.0
+    distance_deadband_m: float = 0.25
+    distance_kp: float = 0.25
+    distance_max_forward_mps: float = 0.15
+    distance_max_reverse_mps: float = 0.0
+    distance_measurement_max_age_s: float = 0.60
+    distance_min_confidence: float = 0.50
+    distance_pair_max_delta_s: float = 0.20
+    distance_center_fallback: bool = False
 
     @classmethod
     def from_mapping(cls, source: Mapping[str, Any] | None) -> "RuntimeConfig":
@@ -152,6 +193,46 @@ class RuntimeConfig:
             MAX_WZ,
             MAX_CONFIGURED_WZ,
         )
+        distance_enabled = _explicit_bool(
+            cfg.get("distance_enabled"),
+            "distance_enabled",
+            cls.distance_enabled,
+        )
+        min_target_distance_m = _bounded_float(
+            cfg.get("min_target_distance_m"),
+            "min_target_distance_m",
+            cls.min_target_distance_m,
+            minimum=0.50,
+            maximum=7.0,
+        )
+        max_target_distance_m = _bounded_float(
+            cfg.get("max_target_distance_m"),
+            "max_target_distance_m",
+            cls.max_target_distance_m,
+            minimum=min_target_distance_m,
+            maximum=7.0,
+        )
+        target_distance_m = _bounded_float(
+            cfg.get("target_distance_m"),
+            "target_distance_m",
+            cls.target_distance_m,
+            minimum=min_target_distance_m,
+            maximum=max_target_distance_m,
+        )
+        distance_max_forward_mps = _bounded_float(
+            cfg.get("distance_max_forward_mps"),
+            "distance_max_forward_mps",
+            min(cls.distance_max_forward_mps, max_vx),
+            minimum=0.0,
+            maximum=max_vx,
+        )
+        distance_max_reverse_mps = _bounded_float(
+            cfg.get("distance_max_reverse_mps"),
+            "distance_max_reverse_mps",
+            cls.distance_max_reverse_mps,
+            minimum=0.0,
+            maximum=0.0,
+        )
         selected_source = str(
             mux.get("selected_source", cfg.get("selected_source", "robottrack"))
         ).strip().lower()
@@ -178,6 +259,9 @@ class RuntimeConfig:
             mode=mode,
             rgb_topic=_absolute_topic(
                 cfg.get("rgb_topic"), "rgb_topic", cls.rgb_topic
+            ),
+            depth_topic=_absolute_topic(
+                cfg.get("depth_topic"), "depth_topic", cls.depth_topic
             ),
             command_topic=command_topic,
             server_url=server_url,
@@ -219,6 +303,53 @@ class RuntimeConfig:
                 "source_max_age_s",
                 cls.source_max_age_s,
                 MAX_PLAN_AGE_S,
+            ),
+            distance_enabled=distance_enabled,
+            target_distance_m=target_distance_m,
+            min_target_distance_m=min_target_distance_m,
+            max_target_distance_m=max_target_distance_m,
+            distance_deadband_m=_bounded_float(
+                cfg.get("distance_deadband_m"),
+                "distance_deadband_m",
+                cls.distance_deadband_m,
+                minimum=0.0,
+                maximum=2.0,
+            ),
+            distance_kp=_bounded_float(
+                cfg.get("distance_kp"),
+                "distance_kp",
+                cls.distance_kp,
+                minimum=0.0,
+                maximum=2.0,
+                include_minimum=False,
+            ),
+            distance_max_forward_mps=distance_max_forward_mps,
+            distance_max_reverse_mps=distance_max_reverse_mps,
+            distance_measurement_max_age_s=_bounded_float(
+                cfg.get("distance_measurement_max_age_s"),
+                "distance_measurement_max_age_s",
+                cls.distance_measurement_max_age_s,
+                minimum=0.05,
+                maximum=2.0,
+            ),
+            distance_min_confidence=_bounded_float(
+                cfg.get("distance_min_confidence"),
+                "distance_min_confidence",
+                cls.distance_min_confidence,
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            distance_pair_max_delta_s=_bounded_float(
+                cfg.get("distance_pair_max_delta_s"),
+                "distance_pair_max_delta_s",
+                cls.distance_pair_max_delta_s,
+                minimum=0.01,
+                maximum=1.0,
+            ),
+            distance_center_fallback=_explicit_bool(
+                cfg.get("distance_center_fallback"),
+                "distance_center_fallback",
+                cls.distance_center_fallback,
             ),
         )
 

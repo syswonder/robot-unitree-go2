@@ -22,6 +22,7 @@ import yaml
 
 from render_workstation_nomotion_d435i_preview_manifest import (
     D435I_CAMERA_INFO_TOPIC,
+    D435I_DEPTH_TOPIC,
     D435I_RGB_TOPIC,
     ManifestError,
     _named,
@@ -63,6 +64,15 @@ DEFAULT_SOURCE = "robottrack"
 # Linear acceleration and angular tuning are intentionally unchanged.
 ROBOTTRACK_LIVE_MAX_VX = 0.50
 ROBOTTRACK_LIVE_MAX_WZ = 0.30
+ROBOTTRACK_DISTANCE_MIN_M = 0.5
+ROBOTTRACK_DISTANCE_MAX_M = 7.0
+ROBOTTRACK_DISTANCE_DEFAULT_M = 5.0
+# The first fixed-distance physical run proved that the original 0.25 m
+# deadband / 0.25 gain made a valid 5.36 m observation request only 0.028 m/s.
+# Keep the same 0.50 m/s ceiling, but make the dedicated distance profile react
+# visibly once the person leaves a smaller steady-state band.
+ROBOTTRACK_DISTANCE_DEADBAND_M = 0.10
+ROBOTTRACK_DISTANCE_KP = 0.50
 
 
 def _config(manifest: dict[str, Any], section: str, name: str) -> dict[str, Any]:
@@ -76,6 +86,8 @@ def _robottrack_primitive(
     *,
     server_url: str = ROBOTTRACK_SERVER_URL,
     instruction: str = ROBOTTRACK_INSTRUCTION,
+    distance_enabled: bool = False,
+    target_distance_m: float = ROBOTTRACK_DISTANCE_DEFAULT_M,
 ) -> dict[str, Any]:
     if not isinstance(server_url, str) or not server_url.strip():
         raise ManifestError("RobotTrack server_url must be a non-empty string")
@@ -93,6 +105,18 @@ def _robottrack_primitive(
         )
     if not isinstance(instruction, str) or not instruction.strip():
         raise ManifestError("RobotTrack instruction must be a non-empty string")
+    if not isinstance(distance_enabled, bool):
+        raise ManifestError("distance_enabled must be a bool")
+    if (
+        isinstance(target_distance_m, bool)
+        or not isinstance(target_distance_m, (int, float))
+        or not ROBOTTRACK_DISTANCE_MIN_M
+        <= float(target_distance_m)
+        <= ROBOTTRACK_DISTANCE_MAX_M
+    ):
+        raise ManifestError(
+            "target_distance_m must be between 0.5 and 7.0 metres"
+        )
     return {
         "name": ROBOTTRACK_PROVIDER_ID,
         "path": ROBOTTRACK_PACKAGE_PATH,
@@ -102,6 +126,7 @@ def _robottrack_primitive(
             # it to publish bounded commands to its private raw topic.
             "mode": "live",
             "rgb_topic": D435I_RGB_TOPIC,
+            "depth_topic": D435I_DEPTH_TOPIC,
             "camera_info_topic": D435I_CAMERA_INFO_TOPIC,
             "command_topic": ROBOTTRACK_RAW_COMMAND_TOPIC,
             "server_url": server_url.strip(),
@@ -114,6 +139,24 @@ def _robottrack_primitive(
             "max_plan_age_s": 1.5,
             "max_vx": ROBOTTRACK_LIVE_MAX_VX,
             "max_wz": ROBOTTRACK_LIVE_MAX_WZ,
+            # This layer is disabled in the existing RobotTrack launcher and
+            # enabled only by the dedicated fixed-distance launcher.
+            "distance_enabled": distance_enabled,
+            "target_distance_m": float(target_distance_m),
+            "min_target_distance_m": ROBOTTRACK_DISTANCE_MIN_M,
+            "max_target_distance_m": ROBOTTRACK_DISTANCE_MAX_M,
+            "distance_deadband_m": ROBOTTRACK_DISTANCE_DEADBAND_M,
+            "distance_kp": ROBOTTRACK_DISTANCE_KP,
+            "distance_max_forward_mps": ROBOTTRACK_LIVE_MAX_VX,
+            # The established chassis contract is forward-only.  Increasing
+            # the setpoint therefore slows/stops until the person opens the
+            # requested gap; it does not silently introduce unvalidated
+            # reverse chassis motion.
+            "distance_max_reverse_mps": 0.0,
+            "distance_measurement_max_age_s": 0.60,
+            "distance_min_confidence": 0.50,
+            "distance_pair_max_delta_s": 0.20,
+            "distance_center_fallback": False,
             "asset_manifest": ROBOTTRACK_ASSET_MANIFEST,
             "upstream_root": ROBOTTRACK_UPSTREAM_ROOT,
             "source_mux": {
@@ -133,6 +176,9 @@ def render(
     passive_state_markers: list[int] | tuple[int, ...],
     server_url: str = ROBOTTRACK_SERVER_URL,
     instruction: str = ROBOTTRACK_INSTRUCTION,
+    distance_enabled: bool = False,
+    target_distance_m: float = ROBOTTRACK_DISTANCE_DEFAULT_M,
+    omit_scene: bool = False,
 ) -> dict[str, Any]:
     rendered = render_persistent(
         base,
@@ -154,6 +200,8 @@ def render(
         _robottrack_primitive(
             server_url=server_url,
             instruction=instruction,
+            distance_enabled=distance_enabled,
+            target_distance_m=target_distance_m,
         )
     )
 
@@ -176,7 +224,31 @@ def render(
     environment["ROBOTTRACK_UPSTREAM_ROOT"] = ROBOTTRACK_UPSTREAM_ROOT
 
     validate_rendered(rendered)
+    if omit_scene:
+        systems = rendered.get("system")
+        if not isinstance(systems, dict) or "scene" not in systems:
+            raise ManifestError("RobotTrack lean profile cannot remove scene")
+        systems.pop("scene")
+        validate_scene_omitted(rendered)
     return rendered
+
+
+def validate_scene_omitted(manifest: dict[str, Any]) -> None:
+    """Validate the memory-lean follow profile against the full baseline.
+
+    Scene is not used by RobotTrack distance control or the voice distance
+    capability, while its concept-graph process consumes several GiB on this
+    workstation. Reconstructing only that system entry in a private copy lets
+    the existing strict RobotTrack/Nav2/chassis validation prove every other
+    route and setting stayed unchanged.
+    """
+
+    systems = manifest.get("system")
+    if not isinstance(systems, dict) or "scene" in systems:
+        raise ManifestError("lean RobotTrack manifest must omit only scene")
+    full_view = copy.deepcopy(manifest)
+    full_view["system"]["scene"] = {}
+    validate_rendered(full_view)
 
 
 def validate_rendered(manifest: dict[str, Any]) -> None:
@@ -232,6 +304,24 @@ def validate_rendered(manifest: dict[str, Any]) -> None:
         and robottrack.get("max_plan_age_s") == 1.5
         and robottrack.get("max_vx") == ROBOTTRACK_LIVE_MAX_VX
         and robottrack.get("max_wz") == ROBOTTRACK_LIVE_MAX_WZ,
+        "fixed_distance_profile": isinstance(
+            robottrack.get("distance_enabled"), bool
+        )
+        and robottrack.get("depth_topic") == D435I_DEPTH_TOPIC
+        and robottrack.get("min_target_distance_m")
+        == ROBOTTRACK_DISTANCE_MIN_M
+        and robottrack.get("max_target_distance_m")
+        == ROBOTTRACK_DISTANCE_MAX_M
+        and ROBOTTRACK_DISTANCE_MIN_M
+        <= robottrack.get("target_distance_m", -1.0)
+        <= ROBOTTRACK_DISTANCE_MAX_M
+        and robottrack.get("distance_max_forward_mps")
+        == ROBOTTRACK_LIVE_MAX_VX
+        and robottrack.get("distance_deadband_m")
+        == ROBOTTRACK_DISTANCE_DEADBAND_M
+        and robottrack.get("distance_kp") == ROBOTTRACK_DISTANCE_KP
+        and robottrack.get("distance_max_reverse_mps") == 0.0
+        and robottrack.get("distance_center_fallback") is False,
         "source_mux": isinstance(source_mux, dict)
         and source_mux
         == {
@@ -292,6 +382,13 @@ def main() -> int:
     parser.add_argument("--passive-state-markers", required=True)
     parser.add_argument("--server-url", default=ROBOTTRACK_SERVER_URL)
     parser.add_argument("--instruction", default=ROBOTTRACK_INSTRUCTION)
+    parser.add_argument("--distance-enabled", action="store_true")
+    parser.add_argument("--omit-scene", action="store_true")
+    parser.add_argument(
+        "--target-distance-m",
+        type=float,
+        default=ROBOTTRACK_DISTANCE_DEFAULT_M,
+    )
     args = parser.parse_args()
     if not args.base.is_file() or not args.output.is_absolute():
         parser.error("base must be a file and output must be absolute")
@@ -308,6 +405,9 @@ def main() -> int:
             passive_state_markers=[int(token, 10) for token in markers],
             server_url=args.server_url,
             instruction=args.instruction,
+            distance_enabled=args.distance_enabled,
+            target_distance_m=args.target_distance_m,
+            omit_scene=args.omit_scene,
         )
         write_manifest(args.output, manifest)
     except (OSError, yaml.YAMLError, ManifestError) as error:

@@ -22,8 +22,8 @@ if [[ ! -r "${DEPLOY_ROOT}/scripts/build_robonix_ros2_overlay.sh" ]]; then
   exit 1
 fi
 
-echo "[go2_robottrack/build] generating Robonix lifecycle bindings"
-rbnx codegen -p "${ROOT}" --ros2
+echo "[go2_robottrack/build] generating Robonix lifecycle and distance bindings"
+rbnx codegen -p "${ROOT}" --mcp --ros2
 # shellcheck disable=SC1090
 source "${DEPLOY_ROOT}/scripts/build_robonix_ros2_overlay.sh"
 set +u

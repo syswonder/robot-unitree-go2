@@ -52,6 +52,14 @@ class RobotTrackManifestTests(unittest.TestCase):
             passive_state_markers=[100, 1002],
         )
 
+    def lean(self):
+        return self.renderer.render(
+            self.base,
+            state_marker=100,
+            passive_state_markers=[100, 1002],
+            omit_scene=True,
+        )
+
     def persistent(self):
         return self.persistent_renderer.render(
             self.base,
@@ -122,6 +130,10 @@ class RobotTrackManifestTests(unittest.TestCase):
         self.assertEqual(robottrack["mode"], "live")
         self.assertEqual(robottrack["rgb_topic"], "/go2/d435i/color/image_raw")
         self.assertEqual(
+            robottrack["depth_topic"],
+            "/go2/d435i/aligned_depth_to_color/image_raw",
+        )
+        self.assertEqual(
             robottrack["server_url"], "http://127.0.0.1:5801/eval_dual"
         )
         self.assertEqual(robottrack["instruction"], "Follow the person ahead")
@@ -136,6 +148,51 @@ class RobotTrackManifestTests(unittest.TestCase):
         )
         self.assertEqual(robottrack["max_vx"], 0.50)
         self.assertEqual(robottrack["max_wz"], 0.30)
+        self.assertIs(robottrack["distance_enabled"], False)
+        self.assertEqual(robottrack["target_distance_m"], 5.0)
+
+    def test_fixed_distance_profile_is_opt_in_and_keeps_the_same_route(self) -> None:
+        manifest = self.renderer.render(
+            self.base,
+            state_marker=2010,
+            passive_state_markers=[100, 1002, 2010],
+            distance_enabled=True,
+            target_distance_m=6.0,
+        )
+        robottrack = self.config(
+            manifest, "primitive", self.renderer.ROBOTTRACK_PROVIDER_ID
+        )
+        self.assertIs(robottrack["distance_enabled"], True)
+        self.assertEqual(robottrack["target_distance_m"], 6.0)
+        self.assertEqual(
+            robottrack["distance_deadband_m"],
+            self.renderer.ROBOTTRACK_DISTANCE_DEADBAND_M,
+        )
+        self.assertEqual(robottrack["distance_deadband_m"], 0.10)
+        self.assertEqual(
+            robottrack["distance_kp"], self.renderer.ROBOTTRACK_DISTANCE_KP
+        )
+        self.assertEqual(robottrack["distance_kp"], 0.50)
+        self.assertEqual(robottrack["distance_max_reverse_mps"], 0.0)
+        self.assertEqual(
+            robottrack["source_mux"]["output_topic"],
+            self.renderer.SMOOTHER_INPUT_TOPIC,
+        )
+        runtime = RuntimeConfig.from_mapping(robottrack)
+        self.assertTrue(runtime.distance_enabled)
+        self.assertEqual(runtime.target_distance_m, 6.0)
+
+        for target in (0.49, 7.01):
+            with self.subTest(target=target), self.assertRaises(
+                self.renderer.ManifestError
+            ):
+                self.renderer.render(
+                    self.base,
+                    state_marker=2010,
+                    passive_state_markers=[100, 1002, 2010],
+                    distance_enabled=True,
+                    target_distance_m=target,
+                )
 
     def test_runtime_endpoint_and_instruction_are_explicitly_overridable(self) -> None:
         manifest = self.renderer.render(
@@ -254,6 +311,16 @@ class RobotTrackManifestTests(unittest.TestCase):
         self.assertIs(chassis["preserve_classic_walk"], False)
         self.assertIs(persistent_chassis["preserve_classic_walk"], True)
         self.assertEqual(chassis["motion_profile"], self.renderer.PROFILE)
+
+    def test_lean_follow_omits_only_the_unused_scene_system(self) -> None:
+        full = self.render()
+        lean = self.lean()
+        self.assertIn("scene", full["system"])
+        self.assertNotIn("scene", lean["system"])
+        restored = copy.deepcopy(lean)
+        restored["system"]["scene"] = full["system"]["scene"]
+        self.assertEqual(restored, full)
+        self.renderer.validate_scene_omitted(lean)
 
     def test_persistent_validator_is_not_relaxed_for_robottrack_override(self) -> None:
         persistent = self.persistent()

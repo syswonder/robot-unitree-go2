@@ -25,6 +25,10 @@ class RuntimeConfigTests(unittest.TestCase):
         config = RuntimeConfig.from_mapping({})
         self.assertEqual(config.mode, "dry-run")
         self.assertEqual(config.rgb_topic, "/go2/d435i/color/image_raw")
+        self.assertEqual(
+            config.depth_topic,
+            "/go2/d435i/aligned_depth_to_color/image_raw",
+        )
         self.assertEqual(config.command_topic, "/go2/robottrack/cmd_vel_raw")
         self.assertEqual(config.model_input_mode, "center_crop_height")
         self.assertEqual(config.model_crop_size, 384)
@@ -34,6 +38,14 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(config.max_plan_age_s, 1.5)
         self.assertEqual(config.max_vx, 0.15)
         self.assertEqual(config.max_wz, 0.30)
+        self.assertFalse(config.distance_enabled)
+        self.assertEqual(config.target_distance_m, 5.0)
+        self.assertEqual(config.distance_max_forward_mps, 0.15)
+
+        round_trip = RuntimeConfig.from_mapping(
+            RuntimeConfig().as_ros_parameters()
+        )
+        self.assertEqual(round_trip, RuntimeConfig())
 
     def test_live_and_nested_mux_config_are_accepted(self) -> None:
         config = RuntimeConfig.from_mapping(
@@ -70,6 +82,37 @@ class RuntimeConfigTests(unittest.TestCase):
             RuntimeConfig.from_mapping({"model_input_mode": "aspect_resize"})
         with self.assertRaisesRegex(ValueError, "model_crop_size"):
             RuntimeConfig.from_mapping({"model_crop_size": 512})
+
+    def test_fixed_distance_profile_is_explicit_bounded_and_independent(self) -> None:
+        config = RuntimeConfig.from_mapping(
+            {
+                "mode": "live",
+                "max_vx": 0.50,
+                "distance_enabled": True,
+                "target_distance_m": 6.0,
+                "distance_max_forward_mps": 0.45,
+                "distance_max_reverse_mps": 0.0,
+            }
+        )
+        self.assertTrue(config.distance_enabled)
+        self.assertEqual(config.target_distance_m, 6.0)
+        self.assertEqual(config.distance_max_forward_mps, 0.45)
+        self.assertEqual(config.distance_max_reverse_mps, 0.0)
+
+        for override in (
+            {"distance_enabled": "true"},
+            {"target_distance_m": 7.1},
+            {"target_distance_m": 0.4},
+            {"min_target_distance_m": 0.49},
+            {"max_target_distance_m": 7.01},
+            {"distance_max_forward_mps": 0.16},
+            {"distance_max_reverse_mps": 0.01},
+            {"distance_min_confidence": 1.1},
+        ):
+            if "distance_max_forward_mps" in override:
+                override["max_vx"] = 0.15
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                RuntimeConfig.from_mapping(override)
 
 
 class ResponseParserTests(unittest.TestCase):

@@ -2,6 +2,7 @@ go2_robottrack:
   ros__parameters:
     mode: dry-run
     rgb_topic: /go2/d435i/color/image_raw
+    depth_topic: /go2/d435i/aligned_depth_to_color/image_raw
     command_topic: /go2/robottrack/cmd_vel_raw
     server_url: http://127.0.0.1:5801/eval_dual
     instruction: Follow the person ahead
@@ -20,3 +21,15 @@ go2_robottrack:
     selected_output_topic: /cmd_vel_nav
     selected_source: robottrack
     source_max_age_s: 0.25
+    distance_enabled: false
+    target_distance_m: 5.0
+    min_target_distance_m: 0.5
+    max_target_distance_m: 7.0
+    distance_deadband_m: 0.25
+    distance_kp: 0.25
+    distance_max_forward_mps: 0.15
+    distance_max_reverse_mps: 0.0
+    distance_measurement_max_age_s: 0.60
+    distance_min_confidence: 0.50
+    distance_pair_max_delta_s: 0.20
+    distance_center_fallback: false

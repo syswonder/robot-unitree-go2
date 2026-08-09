@@ -15,6 +15,10 @@ PERSISTENT_LAUNCHER = (
 ROBOTTRACK_LAUNCHER = (
     ROOT / "scripts" / "start_workstation_robottrack_follow.sh"
 )
+DISTANCE_LAUNCHER = (
+    ROOT / "scripts" / "start_workstation_robottrack_distance_follow.sh"
+)
+OFFLINE_VALIDATOR = ROOT / "scripts" / "validate_offline.sh"
 
 
 class RobotTrackLauncherTests(unittest.TestCase):
@@ -23,10 +27,16 @@ class RobotTrackLauncherTests(unittest.TestCase):
         cls.base = BASE_LAUNCHER.read_text(encoding="utf-8")
         cls.persistent = PERSISTENT_LAUNCHER.read_text(encoding="utf-8")
         cls.wrapper = ROBOTTRACK_LAUNCHER.read_text(encoding="utf-8")
+        cls.distance_wrapper = DISTANCE_LAUNCHER.read_text(encoding="utf-8")
+        cls.offline_validator = OFFLINE_VALIDATOR.read_text(encoding="utf-8")
 
     def test_default_path_keeps_the_existing_renderers(self) -> None:
         self.assertIn(
             'ROBOTTRACK_MODE="${GO2_ROBOTTRACK_MODE:-false}"', self.base
+        )
+        self.assertIn(
+            'ROBOTTRACK_DISTANCE_MODE="${GO2_ROBOTTRACK_DISTANCE_MODE:-false}"',
+            self.base,
         )
         staged = self.base.index(
             'MANIFEST_RENDERER="$ROOT/deploy/time-sync/'
@@ -76,17 +86,12 @@ class RobotTrackLauncherTests(unittest.TestCase):
         )
         self.assertIn('"${MANIFEST_RENDERER_ARGS[@]}"', self.base)
 
-    def test_extended_graph_ready_timeout_is_robottrack_only(self) -> None:
+    def test_extended_graph_ready_timeout_covers_persistent_profiles(self) -> None:
         self.assertIn(
             'GRAPH_READY_TIMEOUT_SECONDS=60\n'
-            'if [[ "$ROBOTTRACK_MODE" == true ]]; then\n'
+            'if [[ "$PERSISTENT_MODE" == true ]]; then\n'
             '  GRAPH_READY_TIMEOUT_SECONDS=90\n'
             'fi',
-            self.base,
-        )
-        self.assertNotIn(
-            'if [[ "$PERSISTENT_MODE" == true ]]; then\n'
-            '  GRAPH_READY_TIMEOUT_SECONDS=90',
             self.base,
         )
 
@@ -105,6 +110,10 @@ class RobotTrackLauncherTests(unittest.TestCase):
         )
         self.assertIn(
             'export ROBOTTRACK_SERVER_URL="$INHERITED_ROBOTTRACK_SERVER_URL"',
+            self.persistent,
+        )
+        self.assertIn(
+            'export GO2_ROBOTTRACK_LEAN_MODE="$INHERITED_ROBOTTRACK_LEAN_MODE"',
             self.persistent,
         )
 
@@ -136,6 +145,8 @@ class RobotTrackLauncherTests(unittest.TestCase):
             ROBOTTRACK_LAUNCHER.stat().st_mode & stat.S_IXUSR
         )
         self.assertIn("GO2_ROBOTTRACK_MODE=true", self.wrapper)
+        self.assertIn("GO2_ROBOTTRACK_DISTANCE_MODE=false", self.wrapper)
+        self.assertIn("GO2_ROBOTTRACK_LEAN_MODE=false", self.wrapper)
         self.assertIn(
             'ROBOTTRACK_SERVER_URL="${ROBOTTRACK_SERVER_URL:-'
             'http://127.0.0.1:5801/eval_dual}"',
@@ -166,6 +177,40 @@ class RobotTrackLauncherTests(unittest.TestCase):
             with self.subTest(forbidden_state=forbidden_state):
                 self.assertNotIn(forbidden_state, self.wrapper.lower())
 
+    def test_fixed_distance_wrapper_is_separate_and_thin(self) -> None:
+        self.assertTrue(DISTANCE_LAUNCHER.stat().st_mode & stat.S_IXUSR)
+        self.assertIn("GO2_ROBOTTRACK_MODE=true", self.distance_wrapper)
+        self.assertIn(
+            "GO2_ROBOTTRACK_DISTANCE_MODE=true", self.distance_wrapper
+        )
+        self.assertIn("GO2_ROBOTTRACK_LEAN_MODE=true", self.distance_wrapper)
+        self.assertIn(
+            'ROBOTTRACK_TARGET_DISTANCE_M="${ROBOTTRACK_TARGET_DISTANCE_M:-5.0}"',
+            self.distance_wrapper,
+        )
+        self.assertEqual(
+            self.distance_wrapper.count('exec bash "$PERSISTENT_LAUNCHER"'),
+            1,
+        )
+        self.assertIn(
+            '--target-distance-m "${ROBOTTRACK_TARGET_DISTANCE_M:-5.0}"',
+            self.base,
+        )
+        self.assertIn("--omit-scene", self.base)
+
+    def test_repository_offline_entrypoint_runs_robottrack_tests(self) -> None:
+        self.assertIn(
+            'packages/go2_robottrack/tests/run_offline_tests.sh',
+            self.offline_validator,
+        )
+        for module in (
+            "test_distance_control",
+            "test_distance_worker",
+            "test_follow_distance_runtime",
+        ):
+            with self.subTest(module=module):
+                self.assertIn(module, self.offline_validator)
+
     def test_follow_reuses_generation1_classicwalk_and_accepts_100_or_2010(self) -> None:
         self.assertIn(
             'exec bash "$PERSISTENT_LAUNCHER"', self.wrapper
@@ -189,6 +234,7 @@ class RobotTrackLauncherTests(unittest.TestCase):
                 str(BASE_LAUNCHER),
                 str(PERSISTENT_LAUNCHER),
                 str(ROBOTTRACK_LAUNCHER),
+                str(DISTANCE_LAUNCHER),
             ],
             check=False,
             text=True,

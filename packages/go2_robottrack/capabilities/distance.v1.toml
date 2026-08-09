@@ -1,0 +1,12 @@
+[contract]
+id = "robonix/primitive/follow/distance"
+version = "1"
+kind = "primitive"
+idl = "go2_robottrack_control/srv/FollowDistance.srv"
+description = "Set, adjust, or read the optional metric follow-distance target."
+
+[mode]
+type = "rpc"
+
+[semantics]
+stateless = false

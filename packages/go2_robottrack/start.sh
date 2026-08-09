@@ -7,8 +7,9 @@ ROS_SETUP="/opt/ros/${ROS_DISTRO}/setup.bash"
 ROBONIX_IDL_SETUP="${ROOT}/rbnx-build/codegen/ros2_idl/install/setup.bash"
 PACKAGE_SETUP="${ROOT}/.build/ros/install/setup.bash"
 PROTO_STUB="${ROOT}/rbnx-build/codegen/proto_gen/atlas_pb2.py"
+MCP_STUB="${ROOT}/rbnx-build/codegen/robonix_mcp_types/go2_robottrack_control_mcp.py"
 
-for required in "${ROS_SETUP}" "${ROBONIX_IDL_SETUP}" "${PACKAGE_SETUP}" "${PROTO_STUB}"; do
+for required in "${ROS_SETUP}" "${ROBONIX_IDL_SETUP}" "${PACKAGE_SETUP}" "${PROTO_STUB}" "${MCP_STUB}"; do
   if [[ ! -r "${required}" ]]; then
     echo "Missing built runtime artifact: ${required}" >&2
     echo "Run this package's build command before start." >&2
@@ -34,5 +35,5 @@ source "${ROBONIX_IDL_SETUP}"
 source "${PACKAGE_SETUP}"
 set -u
 
-export PYTHONPATH="${ROBONIX_API_ROOT}:${ROOT}:${ROOT}/rbnx-build/codegen/proto_gen:${PYTHONPATH:-}"
+export PYTHONPATH="${ROBONIX_API_ROOT}:${ROOT}:${ROOT}/rbnx-build/codegen/proto_gen:${ROOT}/rbnx-build/codegen/robonix_mcp_types:${PYTHONPATH:-}"
 exec python3 -m go2_robottrack.provider

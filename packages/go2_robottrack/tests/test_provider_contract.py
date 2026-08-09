@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 import sys
 import threading
 import types
 import unittest
 from unittest import mock
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class Result:
@@ -43,6 +49,9 @@ class FakePrimitive:
     def on_shutdown(self):
         return self._decorator("shutdown")
 
+    def mcp(self, contract_id):
+        return self._decorator(f"mcp:{contract_id}")
+
     def run(self):
         raise AssertionError("provider.run must not be called by offline tests")
 
@@ -54,6 +63,16 @@ def load_provider_module():
     fake_api.Err = lambda detail: Result("err", detail)
     fake_api.Deferred = lambda detail: Result("deferred", detail)
     sys.modules["robonix_api"] = fake_api
+    fake_mcp = types.ModuleType("go2_robottrack_control_mcp")
+
+    class FakeMessage:
+        def __init__(self, **fields):
+            for name, value in fields.items():
+                setattr(self, name, value)
+
+    fake_mcp.FollowDistance_Request = FakeMessage
+    fake_mcp.FollowDistance_Response = FakeMessage
+    sys.modules["go2_robottrack_control_mcp"] = fake_mcp
     sys.modules.pop("go2_robottrack.provider", None)
     return importlib.import_module("go2_robottrack.provider")
 
@@ -95,6 +114,57 @@ class ProviderContractTests(unittest.TestCase):
             observed["robottrack_raw_topic"], "/go2/robottrack/cmd_vel_raw"
         )
         self.assertEqual(module.deactivate().kind, "ok")
+
+    def test_activate_rejects_runner_exit_after_liveness_check(self) -> None:
+        module = load_provider_module()
+        release_runner = threading.Event()
+        runner_returned = threading.Event()
+
+        def runner(config, stop_event, ready_event, errors):
+            del config, stop_event, errors
+            ready_event.set()
+            release_runner.wait(2.0)
+            runner_returned.set()
+
+        real_thread_type = threading.Thread
+
+        class StaleAliveThread(real_thread_type):
+            """Expose the old check-then-commit race deterministically."""
+
+            released = False
+
+            def is_alive(self) -> bool:
+                alive = super().is_alive()
+                if alive and not self.released:
+                    self.released = True
+                    release_runner.set()
+                    exited = module._runtime_exited
+                    if exited is not None:
+                        exited.wait(2.0)
+                    # Simulate the stale True already returned by the old
+                    # pre-lock liveness check after the runner has exited.
+                    return True
+                return alive
+
+        module._ros_runner = runner
+        self.assertEqual(
+            module.initialize(
+                {"mode": "live", "distance_enabled": True}
+            ).kind,
+            "ok",
+        )
+
+        with mock.patch.object(module.threading, "Thread", StaleAliveThread):
+            result = module.activate()
+
+        self.assertEqual(result.kind, "err")
+        self.assertIn("exited during startup", result.detail)
+        self.assertTrue(runner_returned.is_set())
+        self.assertFalse(module._active)
+        self.assertFalse(module.distance_runtime.snapshot().active)
+        self.assertIsNone(module._runtime_thread)
+        self.assertIsNone(module._runtime_stop)
+        self.assertIsNone(module._runtime_exited)
 
     def test_shutdown_stops_active_runtime(self) -> None:
         module = load_provider_module()
@@ -165,6 +235,78 @@ class ProviderContractTests(unittest.TestCase):
         module = load_provider_module()
         self.assertEqual(module.initialize({}).kind, "ok")
         self.assertEqual(module._config["mode"], "dry-run")
+        self.assertFalse(module.distance_runtime.snapshot().enabled)
+
+    def test_packaged_default_yaml_initializes_consistently(self) -> None:
+        module = load_provider_module()
+        document = yaml.safe_load(
+            (ROOT / "config" / "go2_robottrack.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        parameters = document["go2_robottrack"]["ros__parameters"]
+
+        result = module.initialize(parameters)
+
+        self.assertEqual(result.kind, "ok", result.detail)
+        self.assertEqual(module._config["max_vx"], 0.15)
+        self.assertEqual(module._config["distance_max_forward_mps"], 0.15)
+        self.assertFalse(module.distance_runtime.snapshot().enabled)
+
+    def test_distance_mcp_set_adjust_get_reports_runtime_state(self) -> None:
+        module = load_provider_module()
+        self.assertIn(
+            "mcp:robonix/primitive/follow/distance",
+            module.provider.callbacks,
+        )
+        initialized = module.initialize(
+            {
+                "distance_enabled": True,
+                "target_distance_m": 5.0,
+                "min_target_distance_m": 0.5,
+                "max_target_distance_m": 7.0,
+            }
+        )
+        self.assertEqual(initialized.kind, "ok")
+
+        request_type = sys.modules[
+            "go2_robottrack_control_mcp"
+        ].FollowDistance_Request
+        set_response = module.follow_distance(
+            request_type(operation="set", meters=6.0)
+        )
+        self.assertTrue(set_response.accepted)
+        self.assertTrue(set_response.enabled)
+        self.assertFalse(set_response.active)
+        self.assertEqual(set_response.target_distance_m, 6.0)
+        self.assertFalse(set_response.has_measurement)
+
+        adjust_response = module.follow_distance(
+            request_type(operation="adjust", meters=-1.0)
+        )
+        self.assertTrue(adjust_response.accepted)
+        self.assertEqual(adjust_response.target_distance_m, 5.0)
+        get_response = module.follow_distance(
+            request_type(operation="get", meters=0.0)
+        )
+        self.assertTrue(get_response.accepted)
+        self.assertEqual(get_response.status, "target_updated")
+
+    def test_distance_mcp_rejects_out_of_bounds_without_mutation(self) -> None:
+        module = load_provider_module()
+        self.assertEqual(
+            module.initialize({"distance_enabled": True}).kind,
+            "ok",
+        )
+        request_type = sys.modules[
+            "go2_robottrack_control_mcp"
+        ].FollowDistance_Request
+        response = module.follow_distance(
+            request_type(operation="set", meters=7.1)
+        )
+        self.assertFalse(response.accepted)
+        self.assertEqual(response.target_distance_m, 5.0)
+        self.assertIn("[0.50, 7.00]", response.detail)
 
 
 if __name__ == "__main__":
