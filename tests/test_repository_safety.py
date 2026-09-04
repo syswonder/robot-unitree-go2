@@ -240,6 +240,12 @@ class RepositorySafetyTest(unittest.TestCase):
         self.assertEqual(mapping["config"]["webui_host"], "127.0.0.1")
         self.assertEqual(mapping["config"]["webui_port"], 8091)
         self.assertEqual(dashboard["config"]["host"], "127.0.0.1")
+        self.assertEqual(
+            audio["url"],
+            "https://github.com/syswonder/primitive-audio-client-bridge-rbnx",
+        )
+        self.assertEqual(audio["branch"], "main")
+        self.assertNotIn("path", audio)
         self.assertEqual(audio["config"]["listen_host"], "127.0.0.1")
 
         start = (ROOT / "start.sh").read_text(encoding="utf-8")

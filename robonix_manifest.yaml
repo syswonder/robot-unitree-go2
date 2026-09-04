@@ -133,7 +133,8 @@ primitive:
     path: ${ROBONIX_DEPLOY_DIR}/packages/go2_description
 
   - name: audio_client_bridge
-    path: ${ROBONIX_SOURCE_PATH}/examples/webots/primitives/audio_client_bridge
+    url: https://github.com/syswonder/primitive-audio-client-bridge-rbnx
+    branch: main
     config:
       transport: reverse
       listen_host: 127.0.0.1
