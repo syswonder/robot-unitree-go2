@@ -1,8 +1,9 @@
 # Local semantic intent router
 
 This loopback-only OpenAI-compatible endpoint gives Robonix Pilot a bounded,
-credential-free production path for saved semantic landmarks. It is not a
-perception model and never calls ROS, Nav2, Unitree APIs, or motion topics.
+credential-free production path for saved semantic landmarks and RobotTrack
+follow-distance setpoints. It is not a perception model and never calls ROS,
+Nav2, Unitree APIs, or motion topics directly.
 
 The server is **preview-only by default**. In preview mode the real
 Speech → Liaison → Pilot route may still recognize a Chinese utterance and
@@ -41,6 +42,17 @@ The default two-second status cadence covers roughly 126 seconds within
 Pilot's default 64 tool rounds. Every status detail also carries the semantic
 run ID, so history compaction cannot silently detach the cancel/status loop from
 an accepted Nav2 goal.
+
+When Pilot advertises
+`go2_robottrack.follow_distance`, explicit `live` mode also recognizes
+the exact follow phrases `离我远一点`, `靠近一点`, and absolute forms such as
+`保持5米` or `跟随距离设为5米`. It emits one synchronous
+`robonix/primitive/follow/distance` call with
+`{operation: set|adjust, meters: ...}`. The executor result completes that turn;
+relative adjustments are never emitted again after feedback. In `preview` mode
+these phrases are displayed but still produce an empty RTDL tree. An existing
+semantic-navigation run keeps its original status/cancel flow and is not
+interrupted by a follow-distance phrase.
 
 Run it from the deployment root:
 

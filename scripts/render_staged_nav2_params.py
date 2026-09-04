@@ -263,7 +263,11 @@ def _tighten_controller_relationships(document: dict[str, Any]) -> None:
     parent[key] = min(min_angular, max_angular)
 
 
-def _tighten_smoother_vectors(document: dict[str, Any]) -> None:
+def _tighten_smoother_vectors(
+    document: dict[str, Any],
+    *,
+    external_linear_speed_mps: float | None = None,
+) -> None:
     _, _, controller_max_linear = _number_at(
         document, (*FOLLOW_PATH, "max_vel_x")
     )
@@ -285,11 +289,22 @@ def _tighten_smoother_vectors(document: dict[str, Any]) -> None:
     _, _, controller_angular_decel = _number_at(
         document, (*FOLLOW_PATH, "decel_lim_theta")
     )
-    linear_speed = min(
-        runtime_config.STAGED_NAV2_MAX_VX_MPS,
-        controller_max_linear,
-        controller_max_speed,
-    )
+    if external_linear_speed_mps is None:
+        linear_speed = min(
+            runtime_config.STAGED_NAV2_MAX_VX_MPS,
+            controller_max_linear,
+            controller_max_speed,
+        )
+    else:
+        linear_speed = float(external_linear_speed_mps)
+        if (
+            not math.isfinite(linear_speed)
+            or linear_speed <= 0.0
+            or linear_speed > runtime_config.ROBOTTRACK_MAX_VX_MPS
+        ):
+            raise Stage1ParamsError(
+                "external linear speed exceeds the RobotTrack envelope"
+            )
     angular_speed = min(
         runtime_config.STAGED_NAV2_MAX_WZ_RPS,
         controller_max_angular,
@@ -317,7 +332,11 @@ def _tighten_smoother_vectors(document: dict[str, Any]) -> None:
     if current[0] < 0.0 or current[2] < 0.0:
         raise Stage1ParamsError("velocity_smoother.max_velocity is negative")
     parent[key] = [
-        min(current[0], linear_speed),
+        (
+            min(current[0], linear_speed)
+            if external_linear_speed_mps is None
+            else linear_speed
+        ),
         0.0,
         min(current[2], angular_speed),
     ]
@@ -356,7 +375,11 @@ def _tighten_smoother_vectors(document: dict[str, Any]) -> None:
     ]
 
 
-def render_stage1_params(document: dict[str, Any]) -> dict[str, Any]:
+def render_stage1_params(
+    document: dict[str, Any],
+    *,
+    external_linear_speed_mps: float | None = None,
+) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise Stage1ParamsError("shared Nav2 parameters must be a mapping")
     rendered = deepcopy(document)
@@ -382,7 +405,10 @@ def render_stage1_params(document: dict[str, Any]) -> dict[str, Any]:
     for path, limit in CONTROLLER_NEGATIVE_MAGNITUDE_LIMITS.items():
         _tighten_negative_magnitude_limit(rendered, path, limit)
     _tighten_controller_relationships(rendered)
-    _tighten_smoother_vectors(rendered)
+    _tighten_smoother_vectors(
+        rendered,
+        external_linear_speed_mps=external_linear_speed_mps,
+    )
     changed = _changed_paths(document, rendered)
     if not changed <= STAGE1_ALLOWED_CHANGE_PATHS:
         raise Stage1ParamsError(
@@ -419,6 +445,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--external-linear-speed-mps", type=float)
     return parser.parse_args()
 
 
@@ -433,7 +460,10 @@ def main() -> int:
     with source.open("r", encoding="utf-8") as handle:
         document = yaml.safe_load(handle)
     try:
-        rendered = render_stage1_params(document)
+        rendered = render_stage1_params(
+            document,
+            external_linear_speed_mps=args.external_linear_speed_mps,
+        )
         write_private_yaml(output, rendered)
     except Stage1ParamsError as error:
         raise SystemExit(str(error)) from error

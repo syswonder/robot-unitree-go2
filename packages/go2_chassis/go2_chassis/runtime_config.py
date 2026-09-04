@@ -46,6 +46,7 @@ STAGED_NAV2_COMMAND_TOPIC = "/go2/staged_nav2/cmd_vel"
 STAGED_NAV2_NAV_COMMAND_TOPIC = "/cmd_vel_guard_input"
 STAGED_NAV2_ODOM_TOPIC = "/odom"
 STAGED_NAV2_MAX_VX_MPS = 0.30
+ROBOTTRACK_MAX_VX_MPS = 0.50
 STAGED_NAV2_MAX_VY_MPS = 0.0
 STAGED_NAV2_MAX_WZ_RPS = 0.40
 STAGED_NAV2_MAX_LINEAR_ACCEL_MPS2 = 0.30
@@ -854,8 +855,12 @@ def normalize_config(
                 "external_verified odometry, one audited mode, and the exact "
                 "Classic marker allowlist {100,2010}"
             )
+    robottrack_mode = env.get("GO2_ROBOTTRACK_MODE", "false").strip() == "true"
+    staged_max_linear_x_mps = (
+        ROBOTTRACK_MAX_VX_MPS if robottrack_mode else STAGED_NAV2_MAX_VX_MPS
+    )
     max_linear_x_ceiling = (
-        STAGED_NAV2_MAX_VX_MPS
+        staged_max_linear_x_mps
         if allow_motion and motion_profile == STAGED_NAV2_PROFILE
         else (
             SECOND_MOTION_MAX_VX_MPS
@@ -1088,7 +1093,7 @@ def normalize_config(
                 ),
                 "max_linear_x_mps": (
                     max_linear_x_mps,
-                    STAGED_NAV2_MAX_VX_MPS,
+                    staged_max_linear_x_mps,
                 ),
                 "max_linear_y_mps": (
                     max_linear_y_mps,

@@ -92,6 +92,28 @@ class StagedNav2Stage1ParamsTest(unittest.TestCase):
             0.35,
         )
 
+    def test_robottrack_profile_expands_only_smoother_linear_ceiling(self) -> None:
+        rendered = module.render_stage1_params(
+            self.document,
+            external_linear_speed_mps=0.50,
+        )
+        controller = rendered["controller_server"]["ros__parameters"][
+            "FollowPath"
+        ]
+        smoother = rendered["velocity_smoother"]["ros__parameters"]
+        self.assertEqual(controller["max_vel_x"], 0.30)
+        self.assertEqual(controller["max_speed_xy"], 0.30)
+        self.assertEqual(smoother["max_velocity"], [0.50, 0.0, 0.40])
+        self.assertEqual(smoother["max_accel"], [0.30, 0.0, 0.80])
+
+        with self.assertRaisesRegex(
+            module.Stage1ParamsError, "RobotTrack envelope"
+        ):
+            module.render_stage1_params(
+                self.document,
+                external_linear_speed_mps=0.51,
+            )
+
     def test_global_static_denoise_is_preserved_without_touching_local_costmap(
         self,
     ) -> None:

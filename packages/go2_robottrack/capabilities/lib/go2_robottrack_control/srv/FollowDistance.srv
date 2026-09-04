@@ -1,0 +1,13 @@
+# operation: "set", "adjust", or "get".  For "adjust", meters is a signed
+# delta.  "get" ignores meters.
+string operation
+float64 meters
+---
+bool accepted
+bool enabled
+bool active
+bool has_measurement
+float64 target_distance_m
+float64 measured_distance_m
+string status
+string detail

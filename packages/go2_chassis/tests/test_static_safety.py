@@ -9,6 +9,30 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StaticSafetyTest(unittest.TestCase):
+    def test_robottrack_cpp_envelope_preserves_standard_nav2_limit(self) -> None:
+        node = (
+            ROOT
+            / "ros2_ws"
+            / "src"
+            / "go2_chassis_adapter"
+            / "src"
+            / "go2_chassis_adapter_node.cpp"
+        ).read_text()
+        daemon = (ROOT / "sdk_daemon" / "src" / "main.cpp").read_text()
+        for expected in (
+            "constexpr double kStagedNav2MaxVx = 0.30;",
+            "constexpr double kRobotTrackMaxVx = 0.50;",
+            "configured_max_vx_ = guard_config.max_vx;",
+            "message.linear.x > configured_max_vx_",
+            "decision.velocity.vx <= configured_max_vx_",
+        ):
+            self.assertIn(expected, node)
+        for expected in (
+            "constexpr float kStagedNav2MaxVx = 0.30F;",
+            "constexpr float kRobotTrackMaxVx = 0.50F;",
+        ):
+            self.assertIn(expected, daemon)
+
     def test_second_motion_cpp_envelope_matches_audited_profile(self) -> None:
         node = (
             ROOT

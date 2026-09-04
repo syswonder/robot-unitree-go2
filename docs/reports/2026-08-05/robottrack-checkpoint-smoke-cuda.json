@@ -1,0 +1,89 @@
+{
+  "checkpoint_provenance": {
+    "asset_id": "minicpm_robottrack_checkpoint",
+    "expected_model_sha256": "27cc7e58fd0797ea2dfa03b250847a7142eeedc7babbadd7bc63401d051ec7f3",
+    "expected_revision": "80d32d0b091c3b340a1e4a6c78d441e8af19590e",
+    "hash_elapsed_ms": 447.2081169951707,
+    "manifest": "packages/robot-unitree-go2/config/robottrack_assets.yaml",
+    "model_sha256": "27cc7e58fd0797ea2dfa03b250847a7142eeedc7babbadd7bc63401d051ec7f3",
+    "revision": "80d32d0b091c3b340a1e4a6c78d441e8af19590e",
+    "revision_matches": true,
+    "revision_source": "packages/robot-unitree-go2/config/robottrack_assets.yaml#assets[id=minicpm_robottrack_checkpoint].revision",
+    "sha256_matches": true,
+    "sha256_source": "packages/robot-unitree-go2/config/robottrack_assets.yaml#assets[id=minicpm_robottrack_checkpoint].files[path=model.safetensors].sha256"
+  },
+  "finite": {
+    "all": true,
+    "element_count": 24,
+    "finite_count": 24,
+    "maximum": 0.36099982261657715,
+    "minimum": -0.00881835725158453
+  },
+  "load": {
+    "checkpoint": "upstream/MiniCPM-Robot/MiniCPM-RobotTrack/minicpm_robot_track/checkpoints/MiniCPM-RobotTrack",
+    "device_name": "NVIDIA GeForce RTX 4070 Laptop GPU",
+    "device_requested": "cuda:0",
+    "device_resolved": "cuda:0",
+    "elapsed_ms": 432.52828199911164,
+    "local_files_only": true,
+    "parameter_bytes": 931400288,
+    "parameter_count": 449787032
+  },
+  "offline": true,
+  "ok": true,
+  "shape": {
+    "coarse_time_indices": [1, 124],
+    "coarse_tokens": [1, 124, 1536],
+    "expected_trajectory": [1, 8, 3],
+    "fine_time_indices": [1, 64],
+    "fine_tokens": [1, 64, 1536],
+    "input_ids": [1, 5],
+    "matches_expected": true,
+    "trajectory": [1, 8, 3]
+  },
+  "versions": {
+    "cuda_runtime": "13.0",
+    "cudnn": 91900,
+    "python": "3.10.12",
+    "pyyaml": "6.0.3",
+    "safetensors": "0.7.0",
+    "torch": "2.11.0+cu130",
+    "transformers": "4.57.0"
+  },
+  "vram": {
+    "after_inference": {
+      "allocated_bytes": 1345367040,
+      "available": true,
+      "peak_allocated_bytes": 1353513472,
+      "reserved_bytes": 1503657984
+    },
+    "after_load": {
+      "allocated_bytes": 1334640128,
+      "available": true,
+      "peak_allocated_bytes": 1334640128,
+      "reserved_bytes": 1495269376
+    },
+    "before_load": {
+      "allocated_bytes": 0,
+      "available": true,
+      "peak_allocated_bytes": 0,
+      "reserved_bytes": 0
+    },
+    "load_allocated_delta_bytes": 1334640128
+  },
+  "warm_latency_ms": {
+    "maximum": 13.65341399650788,
+    "mean": 13.175297999987379,
+    "measured_iterations": 5,
+    "median": 13.004631000512745,
+    "minimum": 12.839456998335663,
+    "samples": [
+      12.941879998834338,
+      13.65341399650788,
+      12.839456998335663,
+      13.004631000512745,
+      13.437108005746268
+    ],
+    "warmup_iterations": 1
+  }
+}

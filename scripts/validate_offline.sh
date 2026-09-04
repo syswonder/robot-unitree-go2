@@ -41,6 +41,29 @@ python3 -m unittest discover \
 PYTHONPATH="$DEPLOY_DIR/packages/semantic_intent_router:$DEPLOY_DIR/packages/semantic_navigation${PYTHONPATH:+:$PYTHONPATH}" \
   python3 -m unittest discover \
     -s "$DEPLOY_DIR/packages/semantic_intent_router/tests" -p 'test_*.py'
+if python3 -c 'import cv2, numpy' >/dev/null 2>&1; then
+  bash "$DEPLOY_DIR/packages/go2_robottrack/tests/run_offline_tests.sh"
+else
+  echo "[go2_robottrack/test] OpenCV/numpy unavailable; running non-vision offline coverage"
+  (
+    cd "$DEPLOY_DIR/packages/go2_robottrack/tests"
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH="$DEPLOY_DIR/packages/go2_robottrack${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 -m unittest -v \
+        test_camera_preview \
+        test_core \
+        test_distance_control \
+        test_distance_dispatch \
+        test_distance_worker \
+        test_follow_distance_runtime \
+        test_http_client \
+        test_provider_contract \
+        test_rgbd_sync \
+        test_source_mux \
+        test_static_contract \
+        test_worker
+  )
+fi
 python3 -m unittest discover \
   -s "$DEPLOY_DIR/packages/go2_chassis/tests" -p 'test_*.py'
 PYTHONPATH="$DEPLOY_DIR/packages/go2_description${PYTHONPATH:+:$PYTHONPATH}" \
