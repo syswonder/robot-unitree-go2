@@ -18,3 +18,9 @@ share/licenses/unitree_sdk2/. See THIRD_PARTY.md for exact paths.
 The base model geometry is unchanged. This repository adds zero-offset
 `base_link` and `utlidar_lidar` alias joints so Robonix/Nav2 and the official
 unitree_ros2 topic frame share one connected TF tree.
+
+The optional sim/onboarding downloader obtains the official Go2 MJCF/OBJ
+assets from unitreerobotics/unitree_mujoco at commit
+1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d. Downloaded assets retain their
+BSD-3-Clause license, included verbatim as vendor/LICENSE in the generated
+bundle. Generated assets are not committed to this repository.
