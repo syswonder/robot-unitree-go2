@@ -118,6 +118,13 @@ See [docs/HARDWARE_CHECKLIST.md](docs/HARDWARE_CHECKLIST.md) for the exact
 operator steps and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for build/start
 commands.
 
+## MuJoCo body onboarding resources
+
+See [sim/onboarding](sim/onboarding/README.md) for pinned official Go2 model
+downloads, asset/joint checks and the simulation handoff contract. These tools
+do not start a robot or change the physical deployment. They are an onboarding
+kit, not a completed walking simulator or a separately registered deployment.
+
 ## Licenses
 
 Integration code is Apache-2.0. The aggregate deployment also redistributes

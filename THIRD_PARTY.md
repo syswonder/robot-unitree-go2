@@ -14,6 +14,7 @@ the applicable terms.
 | Eclipse Iceoryx | Unitree SDK2 dependency | Apache-2.0 | `third_party/unitree_sdk2/licenses/eclipse-iceoryx/iceoryx/LICENSE` |
 | RapidJSON and its listed third-party components | Unitree SDK2 dependency | MIT and the notices in the upstream license file | `third_party/unitree_sdk2/licenses/Tencent/rapidjson/LICENSE` |
 | Unitree Go2 URDF/DAE assets | Robot model and TF geometry | BSD-3-Clause | `packages/go2_description/LICENSE.unitree` |
+| Optional Unitree Go2 MJCF/OBJ assets | Source-only MuJoCo onboarding download, not vendored | BSD-3-Clause | `unitreerobotics/unitree_mujoco@1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d/LICENSE`; locked in `sim/onboarding/upstream.lock.json`, copied to generated bundle `vendor/LICENSE` |
 
 Both SDK-daemon CMake install rules copy these SDK/runtime license texts into
 `share/licenses/unitree_sdk2/` beside the installed image. Do not distribute a

@@ -18,3 +18,6 @@ rbnx-boot/
 .vscode/settings.json
 config/semantic_landmarks.local.yaml
 config/gate2_replay.local.yaml
+/.runtime/mujoco-onboarding/
+/.runtime/go2-mujoco-venv/
+/.runtime/test-tmp/
