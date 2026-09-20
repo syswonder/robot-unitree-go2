@@ -99,12 +99,17 @@ class RgbdDistanceWorker:
         self._thread.start()
 
     def submit(self, pair: RgbdFramePair) -> bool:
-        """Offer a pair, replacing any pending pair while estimation is busy."""
+        """Replace pending work without revoking a running measurement.
+
+        Epochs represent explicit invalidation, not camera frame sequence.
+        Incrementing on every submit starves results when camera frames arrive
+        faster than estimation finishes. The result consumer still checks the
+        original frame age before committing; a newer frame must not refresh it.
+        """
 
         with self._condition:
             if self._stop:
                 return False
-            self._epoch += 1
             self._latest = (self._epoch, pair)
             self._condition.notify()
             return True

@@ -124,10 +124,56 @@ class DistanceWorkerTests(unittest.TestCase):
             ):
                 time.sleep(0.005)
             self.assertEqual(estimator.sequences[:2], [1, 3])
-            self.assertEqual(results, [(3, "result-3")])
+            self.assertEqual(results, [(1, "result-1"), (3, "result-3")])
             self.assertNotIn(2, estimator.sequences)
         finally:
             estimator.release.set()
+            self.assertTrue(worker.stop())
+
+    def test_continuous_new_pairs_do_not_starve_inflight_measurements(self) -> None:
+        """New camera frames must not revoke a still-fresh running estimate."""
+        entered = [threading.Event() for _ in range(3)]
+        release = [threading.Event() for _ in range(3)]
+        committed = [threading.Event() for _ in range(3)]
+        measurements: list[int] = []
+
+        class Estimator:
+            calls = 0
+
+            def reset(self) -> None:
+                pass
+
+            def estimate(self, rgb, depth, **kwargs):
+                index = self.calls
+                self.calls += 1
+                if index < 3:
+                    entered[index].set()
+                    release[index].wait(2.0)
+                return rgb
+
+        def on_result(pair, result, epoch) -> None:
+            accepted, _ = worker.commit_if_current(
+                epoch, lambda: measurements.append(pair.rgb.sequence)
+            )
+            if accepted and pair.rgb.sequence <= 3:
+                committed[pair.rgb.sequence - 1].set()
+
+        worker = RgbdDistanceWorker(Estimator(), on_result=on_result)
+        worker.start()
+        try:
+            worker.submit(_pair(1))
+            for index in range(3):
+                self.assertTrue(entered[index].wait(1.0))
+                worker.submit(_pair(index + 2))
+                release[index].set()
+                self.assertTrue(
+                    committed[index].wait(1.0),
+                    "a newer pending pair discarded the running measurement",
+                )
+            self.assertEqual(measurements[:3], [1, 2, 3])
+        finally:
+            for event in release:
+                event.set()
             self.assertTrue(worker.stop())
 
     def test_result_callback_receives_pair_and_result(self) -> None:
