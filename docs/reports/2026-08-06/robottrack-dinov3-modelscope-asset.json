@@ -1,0 +1,37 @@
+{
+  "captured_at": "2026-08-06T14:15:05+08:00",
+  "canonical": {
+    "repo_id": "facebook/dinov3-vits16-pretrain-lvd1689m",
+    "revision": "114c1379950215c8b35dfcd4e90a5c251dde0d32"
+  },
+  "download_source": {
+    "provider": "ModelScope mirror",
+    "repo_id": "facebook/dinov3-vits16-pretrain-lvd1689m",
+    "revision": "2e601320d0545509ab03374e2f8707f303e1de7a",
+    "url": "https://modelscope.cn/models/facebook/dinov3-vits16-pretrain-lvd1689m"
+  },
+  "files": {
+    "LICENSE.md": {
+      "bytes": 7503,
+      "sha256": "25d122eb8f5b880fd23c736fb6ea8018ee45c12237e00b8a86d14c653904999e"
+    },
+    "config.json": {
+      "bytes": 743,
+      "sha256": "9481247be9f95a134a5599402b4bfc838eecdf9a7fffbf4debd1c70ec213898b"
+    },
+    "model.safetensors": {
+      "bytes": 86406384,
+      "sha256": "4610ad75edef83e75afdebf162d148dc628045ea6cbb83d67d4708c709c4f91d"
+    },
+    "preprocessor_config.json": {
+      "bytes": 585,
+      "sha256": "960c41d1f3a7778b936365769a2d90550b318a6c0a53a0296957adacfe5e0dd7"
+    }
+  },
+  "verification": {
+    "config_huggingface_git_oid": "fdff48569812f3cbadf253762565c4ce9dacddac",
+    "license_huggingface_git_oid": "f531b1e6b5ab2318957bbf8ad1bda9f800a23e17",
+    "preprocessor_huggingface_git_oid": "0126173c1ab7b75bbd9102e37de8a56ffe0a012b",
+    "result": "exact pinned runtime content"
+  }
+}

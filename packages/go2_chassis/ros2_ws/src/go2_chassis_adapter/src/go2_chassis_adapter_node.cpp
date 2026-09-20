@@ -85,6 +85,7 @@ constexpr const char *kStagedNav2Profile =
 constexpr const char *kStagedNav2CommandTopic =
     "/go2/staged_nav2/cmd_vel";
 constexpr double kStagedNav2MaxVx = 0.30;
+constexpr double kRobotTrackMaxVx = 0.50;
 constexpr double kStagedNav2MaxVy = 0.0;
 constexpr double kStagedNav2MaxWz = 0.40;
 constexpr double kStagedNav2MaxLinearAcceleration = 0.30;
@@ -251,6 +252,7 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
         declare_parameter<std::string>("motion_profile", kFirstMotionProfile);
     const GuardConfig guard_config = DeclareGuardConfig();
     allow_motion_ = guard_config.allow_motion;
+    configured_max_vx_ = guard_config.max_vx;
     preserve_classic_walk_ =
         declare_parameter<bool>("preserve_classic_walk", false);
     if (allow_motion_ && motion_profile_ != kFirstMotionProfile &&
@@ -665,7 +667,8 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
           config.command_timeout_sec == kSecondMotionCommandTimeoutSec;
       const bool staged_nav2_envelope =
           motion_profile_ == kStagedNav2Profile &&
-          config.max_vx == kStagedNav2MaxVx &&
+          (config.max_vx == kStagedNav2MaxVx ||
+           config.max_vx == kRobotTrackMaxVx) &&
           config.max_vy == kStagedNav2MaxVy &&
           config.max_wz == kStagedNav2MaxWz &&
           config.max_linear_acceleration ==
@@ -704,7 +707,7 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
     if (motion_profile_ == kStagedNav2Profile &&
         (!Finite(message.linear.x) || !Finite(message.linear.y) ||
          !Finite(message.angular.z) || message.linear.x < 0.0 ||
-         message.linear.x > kStagedNav2MaxVx ||
+         message.linear.x > configured_max_vx_ ||
          message.linear.y != kStagedNav2MaxVy ||
          std::fabs(message.angular.z) > kStagedNav2MaxWz)) {
       commissioning_motion_active_ = false;
@@ -1592,7 +1595,7 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
       const bool staged_nav2_velocity =
           motion_profile_ == kStagedNav2Profile &&
           decision.velocity.vx >= 0.0 &&
-          decision.velocity.vx <= kStagedNav2MaxVx &&
+          decision.velocity.vx <= configured_max_vx_ &&
           decision.velocity.vy == kStagedNav2MaxVy &&
           std::fabs(decision.velocity.wz) <= kStagedNav2MaxWz;
       if (!Finite(decision.velocity.vx) || !Finite(decision.velocity.vy) ||
@@ -1957,6 +1960,7 @@ class Go2ChassisAdapterNode final : public rclcpp::Node {
   double max_external_odom_yaw_jump_rad_{1.0};
   double control_period_sec_{0.02};
   double command_timeout_sec_{0.25};
+  double configured_max_vx_{kStagedNav2MaxVx};
   double commissioning_motion_start_sec_{0.0};
   double commissioning_elapsed_sec_{0.0};
   double commissioning_distance_m_{0.0};

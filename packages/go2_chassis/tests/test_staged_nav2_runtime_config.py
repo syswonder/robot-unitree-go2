@@ -10,6 +10,7 @@ from go2_chassis.runtime_config import (  # noqa: E402
     ConfigError,
     DEFAULT_EXTERNAL_ODOM_TOPIC,
     FIRST_MOTION_PROFILE,
+    ROBOTTRACK_MAX_VX_MPS,
     STAGED_NAV2_COMMAND_TOPIC,
     STAGED_NAV2_PROFILE,
     normalize_config,
@@ -68,6 +69,35 @@ def first_motion_config():
 
 
 class StagedNav2RuntimeConfigTest(unittest.TestCase):
+    def test_robottrack_mode_selects_exact_half_metre_envelope(self) -> None:
+        runtime = normalize_config(
+            staged_config(max_linear_x_mps=ROBOTTRACK_MAX_VX_MPS),
+            {
+                "GO2_ALLOWED_MODES": "0",
+                "GO2_ALLOWED_STATE_MARKERS": "100,2010",
+                "GO2_ROBOTTRACK_MODE": "true",
+            },
+            ROOT,
+        )
+        self.assertEqual(runtime.max_linear_x_mps, 0.50)
+        adapter = runtime.adapter_argv(
+            Path("/tmp/adapter"), Path("/tmp/params.yaml")
+        )
+        daemon = runtime.daemon_argv(Path("/tmp/daemon"))
+        self.assertIn("max_vx:=0.5", adapter)
+        self.assertEqual(daemon[daemon.index("--max-vx") + 1], "0.5")
+
+        with self.assertRaises(ConfigError):
+            normalize_config(
+                staged_config(max_linear_x_mps=0.30),
+                {
+                    "GO2_ALLOWED_MODES": "0",
+                    "GO2_ALLOWED_STATE_MARKERS": "100,2010",
+                    "GO2_ROBOTTRACK_MODE": "true",
+                },
+                ROOT,
+            )
+
     def test_exact_stage1_profile_reaches_both_processes(self) -> None:
         runtime = normalize_config(
             staged_config(),

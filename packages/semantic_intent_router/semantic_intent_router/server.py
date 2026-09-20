@@ -1,9 +1,10 @@
 """Loopback OpenAI-compatible semantic intent endpoint for Robonix Pilot.
 
 This is deliberately not a general-purpose language model.  It turns a user
-utterance into one live Robonix semantic-navigation capability call only when
-the utterance resolves to one unique, physically verified saved landmark.
-Every other input produces an empty RTDL tree.
+utterance into one bounded Robonix semantic-navigation or RobotTrack distance
+capability call. Navigation still requires one unique, physically verified
+saved landmark; follow-distance commands are parsed by a separate exact-match
+grammar and only alter the active follow setpoint.
 """
 
 from __future__ import annotations
@@ -13,20 +14,27 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
+import math
 from pathlib import Path
 import re
 import time
 from typing import Any, Iterable
 
+from semantic_intent_router.follow_distance import (
+    FollowDistanceIntent,
+    parse_follow_distance_intent,
+)
 from semantic_navigation.core import LandmarkError, LandmarkStore, normalize_text
 
 
 NAV_CONTRACT = "robonix/skill/semantic_navigation/navigate_landmark"
 STATUS_CONTRACT = f"{NAV_CONTRACT}/status"
 CANCEL_CONTRACT = f"{NAV_CONTRACT}/cancel"
+FOLLOW_DISTANCE_CONTRACT = "robonix/primitive/follow/distance"
 NAV_CAPABILITY = "semantic_navigation.semantic_navigation_navigate_landmark"
 STATUS_CAPABILITY = "semantic_navigation.navigate_landmark_status"
 CANCEL_CAPABILITY = "semantic_navigation.navigate_landmark_cancel"
+FOLLOW_DISTANCE_CAPABILITY = "go2_robottrack.follow_distance"
 FEEDBACK_PREFIX = (
     "Executor feedback for the current RTDL leaf (not a new user request): "
 )
@@ -234,6 +242,16 @@ def _semantic_leaves(messages: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
     return [leaf for leaf in leaf_results(messages) if leaf.get("contract_id") in contracts]
 
 
+def _follow_distance_leaves(
+    messages: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        leaf
+        for leaf in leaf_results(messages)
+        if leaf.get("contract_id") == FOLLOW_DISTANCE_CONTRACT
+    ]
+
+
 def _detail_mapping(output: dict[str, Any]) -> dict[str, Any]:
     return _mapping(output.get("detail"))
 
@@ -361,6 +379,132 @@ def _do(capability: str, args: dict[str, Any], description: str) -> dict[str, An
     }
 
 
+def _format_meters(value: float) -> str:
+    return f"{value:g} 米"
+
+
+def _follow_distance_action(intent: FollowDistanceIntent) -> str:
+    if intent.operation == "set":
+        return f"设置跟随距离为 {_format_meters(intent.meters)}"
+    if intent.meters > 0.0:
+        return f"将跟随距离增加 {_format_meters(intent.meters)}"
+    return f"将跟随距离缩短 {_format_meters(abs(intent.meters))}"
+
+
+def _follow_distance_task(
+    intent: FollowDistanceIntent,
+    status: str,
+) -> dict[str, str]:
+    return {
+        "goal": _follow_distance_action(intent),
+        "success_criterion": "RobotTrack 距离能力返回本次设置结果",
+        "status": status,
+    }
+
+
+def _follow_distance_output_target(output: dict[str, Any]) -> float | None:
+    value = output.get("target_distance_m")
+    if isinstance(value, bool):
+        return None
+    try:
+        distance = float(value)
+    except (TypeError, ValueError):
+        return None
+    return distance if math.isfinite(distance) and distance > 0.0 else None
+
+
+def _follow_distance_rejected(output: dict[str, Any]) -> bool:
+    """Treat only explicit provider negatives as rejection.
+
+    Robonix already records transport/contract failure in ``leaf.success``.
+    Providers may additionally expose ``accepted`` or ``ok``; supporting both
+    keeps the router compatible with generated service response naming.
+    """
+
+    return any(output.get(key) is False for key in ("accepted", "ok", "success"))
+
+
+def _follow_distance_detail(output: dict[str, Any]) -> str:
+    detail = output.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        parsed = _mapping(detail)
+        if parsed:
+            for key in ("detail", "message", "reason"):
+                value = parsed.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+        return detail.strip()
+    return ""
+
+
+def _follow_distance_decision(
+    turn: Turn,
+    capabilities: set[str],
+    intent: FollowDistanceIntent,
+) -> Decision:
+    """Dispatch one synchronous setpoint update, then terminate the turn.
+
+    A relative request must never be replayed after executor feedback because
+    replay would add or subtract another metre. Any feedback for this turn is
+    therefore terminal, including malformed or mismatched feedback.
+    """
+
+    action = _follow_distance_action(intent)
+    leaves = _follow_distance_leaves(turn.feedback_messages)
+    if leaves:
+        latest = leaves[-1]
+        output = _mapping(latest.get("output"))
+        if latest.get("success") is True and not _follow_distance_rejected(output):
+            target = _follow_distance_output_target(output)
+            content = (
+                f"{action}已完成，当前目标距离为 {_format_meters(target)}"
+                if target is not None
+                else f"{action}已完成"
+            )
+        else:
+            detail = _follow_distance_detail(output)
+            suffix = f"：{detail}" if detail else ""
+            content = f"{action}失败{suffix}；未重复下发本次调整"
+        return Decision(
+            _envelope(
+                content=content,
+                description="RobotTrack follow distance terminal",
+                task_update=_follow_distance_task(intent, "done"),
+            )
+        )
+
+    if turn.feedback_messages:
+        return Decision(
+            _envelope(
+                content=f"{action}的执行反馈无法解析；未重复下发本次调整",
+                description="RobotTrack follow distance feedback invalid",
+                task_update=_follow_distance_task(intent, "done"),
+            )
+        )
+
+    if FOLLOW_DISTANCE_CAPABILITY not in capabilities:
+        return Decision(
+            _envelope(
+                content="Pilot 未公布 RobotTrack 跟随距离能力，未调整距离",
+                description="RobotTrack follow distance capability unavailable",
+                task_update=_follow_distance_task(intent, "done"),
+            )
+        )
+
+    return Decision(
+        _envelope(
+            content=f"已识别“{action}”，交给 RobotTrack 跟随距离能力",
+            description="update RobotTrack follow distance",
+            tree=_do(
+                FOLLOW_DISTANCE_CAPABILITY,
+                {"operation": intent.operation, "meters": intent.meters},
+                action,
+            ),
+            task_update=_follow_distance_task(intent, "in_progress"),
+        )
+    )
+
+
 def _terminal(content: str, target: str, *, success: bool) -> Decision:
     state = "已到达目标并停止" if success else "任务已终止，未继续下发导航"
     return Decision(
@@ -458,6 +602,23 @@ def _preview(messages: list[dict[str, Any]], store: LandmarkStore) -> Decision:
     """
 
     turn = current_turn(messages)
+    follow_intent = parse_follow_distance_intent(turn.command)
+    if follow_intent is not None:
+        action = _follow_distance_action(follow_intent)
+        return Decision(
+            _envelope(
+                content=(
+                    f"已识别“{action}”；当前是预览模式，未调用 RobotTrack "
+                    "跟随距离能力"
+                ),
+                description="motion-disabled semantic preview: no capability calls",
+                task_update={
+                    "goal": f"跟随距离预览：{action}",
+                    "success_criterion": "预览模式未调用 RobotTrack 跟随距离能力",
+                    "status": "done",
+                },
+            )
+        )
     normalized = normalize_text(turn.command)
     if not normalized:
         return Decision(
@@ -544,6 +705,10 @@ def decide(
     active = run if run is not None and not run.terminal else None
     terminal = run if run is not None and run.terminal else None
     latest = current_leaves[-1] if current_leaves else None
+
+    follow_intent = parse_follow_distance_intent(turn.command)
+    if follow_intent is not None and prior_active is None and active is None:
+        return _follow_distance_decision(turn, caps, follow_intent)
 
     normalized_command = normalize_text(turn.command)
     stop_requested = normalized_command in _STOP_UTTERANCES

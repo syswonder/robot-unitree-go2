@@ -14,6 +14,8 @@ from semantic_intent_router.server import (  # noqa: E402
     CANCEL_CAPABILITY,
     CANCEL_CONTRACT,
     FEEDBACK_PREFIX,
+    FOLLOW_DISTANCE_CAPABILITY,
+    FOLLOW_DISTANCE_CONTRACT,
     NAV_CAPABILITY,
     NAV_CONTRACT,
     STATUS_CAPABILITY,
@@ -165,6 +167,112 @@ class DecisionTests(unittest.TestCase):
     def test_unknown_execution_mode_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "preview or live"):
             decide(self.base(), store(), execution_mode="maybe")
+
+    def test_live_follow_distance_dispatches_exact_capability_once(self) -> None:
+        cases = {
+            "保持5米": {"operation": "set", "meters": 5.0},
+            "离我远一点": {"operation": "adjust", "meters": 1.0},
+            "靠近一点": {"operation": "adjust", "meters": -1.0},
+        }
+        for utterance, args in cases.items():
+            with self.subTest(utterance=utterance):
+                result = decide(
+                    [
+                        system_message(FOLLOW_DISTANCE_CAPABILITY),
+                        {"role": "user", "content": utterance},
+                    ],
+                    store(),
+                ).envelope
+                self.assertEqual(call(result)["cap"], FOLLOW_DISTANCE_CAPABILITY)
+                self.assertEqual(call(result)["args"], args)
+                self.assertEqual(result["task_update"]["status"], "in_progress")
+
+    def test_preview_follow_distance_never_emits_capability_leaf(self) -> None:
+        result = decide(
+            [
+                system_message(FOLLOW_DISTANCE_CAPABILITY),
+                {"role": "user", "content": "离我远一点"},
+            ],
+            store(),
+            execution_mode="preview",
+        ).envelope
+        self.assertEqual(result["rtdl"]["children"], [])
+        self.assertEqual(result["task_update"]["status"], "done")
+        self.assertIn("预览模式", result["content"])
+        self.assertIn("未调用 RobotTrack", result["content"])
+
+    def test_follow_distance_success_feedback_is_terminal_and_not_replayed(self) -> None:
+        messages = [
+            system_message(FOLLOW_DISTANCE_CAPABILITY),
+            {"role": "user", "content": "离我远一点"},
+            leaf(
+                FOLLOW_DISTANCE_CONTRACT,
+                {"accepted": True, "target_distance_m": 6.0},
+            ),
+        ]
+        result = decide(messages, store()).envelope
+        self.assertEqual(result["rtdl"]["children"], [])
+        self.assertEqual(result["task_update"]["status"], "done")
+        self.assertIn("已完成", result["content"])
+        self.assertIn("6 米", result["content"])
+
+    def test_follow_distance_feedback_failure_is_terminal_and_not_replayed(self) -> None:
+        failures = (
+            leaf(
+                FOLLOW_DISTANCE_CONTRACT,
+                {"detail": "distance mode is disabled"},
+                success=False,
+            ),
+            leaf(
+                FOLLOW_DISTANCE_CONTRACT,
+                {"accepted": False, "detail": "outside configured range"},
+            ),
+            {
+                "role": "user",
+                "content": FEEDBACK_PREFIX + "not-json",
+            },
+        )
+        for feedback in failures:
+            with self.subTest(feedback=feedback["content"]):
+                result = decide(
+                    [
+                        system_message(FOLLOW_DISTANCE_CAPABILITY),
+                        {"role": "user", "content": "靠近一点"},
+                        feedback,
+                    ],
+                    store(),
+                ).envelope
+                self.assertEqual(result["rtdl"]["children"], [])
+                self.assertEqual(result["task_update"]["status"], "done")
+                self.assertTrue(
+                    "失败" in result["content"]
+                    or "无法解析" in result["content"]
+                )
+                self.assertIn("未重复下发", result["content"])
+
+    def test_follow_distance_requires_advertised_capability(self) -> None:
+        result = decide(
+            [system_message(), {"role": "user", "content": "保持5米"}],
+            store(),
+        ).envelope
+        self.assertEqual(result["rtdl"]["children"], [])
+        self.assertEqual(result["task_update"]["status"], "done")
+        self.assertIn("未公布", result["content"])
+
+    def test_follow_distance_does_not_interrupt_active_navigation(self) -> None:
+        messages = self.base() + [
+            leaf(NAV_CONTRACT, nav_output()),
+            {"role": "user", "content": "离我远一点"},
+        ]
+        messages[0] = system_message(
+            NAV_CAPABILITY,
+            STATUS_CAPABILITY,
+            CANCEL_CAPABILITY,
+            FOLLOW_DISTANCE_CAPABILITY,
+        )
+        result = decide(messages, store()).envelope
+        self.assertEqual(call(result)["cap"], STATUS_CAPABILITY)
+        self.assertEqual(call(result)["args"], {"run_id": "semantic-run-1"})
 
     def test_unverified_landmark_never_dispatches(self) -> None:
         result = decide(self.base(), store(verified=False)).envelope

@@ -1,0 +1,87 @@
+schema_version: 1
+
+# The root is resolved relative to the Robonix-Go2 workspace, never relative to
+# the current shell directory.  A command-line --upstream-root takes precedence
+# over ROBOTTRACK_UPSTREAM_ROOT, which in turn takes precedence over this value.
+upstream_root:
+  environment: ROBOTTRACK_UPSTREAM_ROOT
+  default: upstream/MiniCPM-Robot
+
+source:
+  name: OpenBMB MiniCPM-Robot
+  root: .
+  git_revision: f7dc15a016b1b2a7e48a559072521e347658de11
+  required_files:
+    - MiniCPM-RobotTrack/go2_runtime.py
+    - MiniCPM-RobotTrack/go2_runtime.yaml
+    - MiniCPM-RobotTrack/minicpm_robot_track/checkpoint.py
+    - MiniCPM-RobotTrack/realworld/client/http_minicpm_robot_track_client.py
+
+assets:
+  - id: minicpm_robottrack_checkpoint
+    name: MiniCPM-RobotTrack checkpoint
+    root: MiniCPM-RobotTrack/minicpm_robot_track/checkpoints/MiniCPM-RobotTrack
+    revision: 80d32d0b091c3b340a1e4a6c78d441e8af19590e
+    revision_marker: .cache/huggingface/download/model.safetensors.metadata
+    files:
+      - path: model.safetensors
+        size: 931428452
+        sha256: 27cc7e58fd0797ea2dfa03b250847a7142eeedc7babbadd7bc63401d051ec7f3
+      - path: config.json
+        size: 3096
+      - path: configuration_minicpm.py
+        size: 9660
+      - path: configuration_robottrack.py
+        size: 3023
+      - path: modeling_minicpm.py
+        size: 69994
+      - path: modeling_robottrack.py
+        size: 12520
+      - path: tokenizer.json
+        size: 6701371
+      - path: tokenizer.model
+        size: 1181204
+        sha256: bb74d51116831c3bf65db812c553f94ab0c88dcf97a5bbb37e3504f6d359c530
+      - path: tokenizer_config.json
+        size: 2843
+
+  - id: siglip_so400m
+    name: SigLIP SO400M backbone
+    root: MiniCPM-RobotTrack/minicpm_robot_track/backbones/siglip-so400m-patch14-384
+    revision: 9fdffc58afc957d1a03a25b10dba0329ab15c2a3
+    revision_marker: .cache/huggingface/download/model.safetensors.metadata
+    files:
+      - path: model.safetensors
+        size: 3511950624
+        sha256: ea2abad2b7f8a9c1aa5e49a244d5d57ffa71c56f720c94bc5d240ef4d6e1d94a
+      - path: config.json
+        size: 576
+      - path: preprocessor_config.json
+        size: 368
+
+  - id: dinov3_vits16
+    name: DINOv3 ViT-S/16 backbone
+    root: MiniCPM-RobotTrack/minicpm_robot_track/backbones/dino_local_hf
+    revision: 114c1379950215c8b35dfcd4e90a5c251dde0d32
+    # Hugging Face rejected the account-level gated request.  The exact runtime
+    # files were instead obtained from the public ModelScope mirror under the
+    # same facebook/DINOv3 model name.  All declared files are content-pinned;
+    # no Hugging Face cache marker is fabricated for the mirror.
+    verification: sha256_files
+    provenance:
+      provider: modelscope
+      repository: facebook/dinov3-vits16-pretrain-lvd1689m
+      resolved_revision: 2e601320d0545509ab03374e2f8707f303e1de7a
+    files:
+      - path: model.safetensors
+        size: 86406384
+        sha256: 4610ad75edef83e75afdebf162d148dc628045ea6cbb83d67d4708c709c4f91d
+      - path: config.json
+        size: 743
+        sha256: 9481247be9f95a134a5599402b4bfc838eecdf9a7fffbf4debd1c70ec213898b
+      - path: preprocessor_config.json
+        size: 585
+        sha256: 960c41d1f3a7778b936365769a2d90550b318a6c0a53a0296957adacfe5e0dd7
+      - path: LICENSE.md
+        size: 7503
+        sha256: 25d122eb8f5b880fd23c736fb6ea8018ee45c12237e00b8a86d14c653904999e
