@@ -1,0 +1,49 @@
+urdf:
+  path: ../../packages/go2_description/urdf/go2_robonix.urdf
+  root_link: base_link
+  model_name: unitree_go2
+
+robot:
+  id: unitree_go2_sport_01
+  display_name: Unitree Go2 sport actions
+  family: quadruped_robot
+  root_part: base
+  dimensions:
+    length_m: 0.70
+    width_m: 0.31
+    height_m: 0.40
+  exports:
+    - provider_id: go2_sport_actions
+      capabilities:
+        - {path: robonix/skill/go2_sport_actions/list, description: "List named Go2 actions and readiness."}
+        - {path: robonix/skill/go2_sport_actions/preview, description: "Preview a named action without movement."}
+        - {path: robonix/skill/go2_sport_actions/execute_utterance, description: "Dispatch an explicit Chinese dance, greeting, stretch or handstand request."}
+        - {path: robonix/skill/go2_sport_actions/execute, description: "Dispatch one canonical Go2 action."}
+        - {path: robonix/skill/go2_sport_actions/status, description: "Read accepted request and stop state; completion remains unverified."}
+        - {path: robonix/skill/go2_sport_actions/cancel, description: "Cancel an active sport-action run."}
+    - provider_id: speech
+      capabilities:
+        - {path: robonix/service/speech/asr, description: "Recognize the Client microphone utterance."}
+        - {path: robonix/service/speech/speak, description: "Speak to the Client speaker."}
+  components:
+    - id: base
+      type: mobile_base
+      urdf_link: base_link
+      components:
+        - id: client_audio
+          type: audio_io
+          exports:
+            - provider_id: audio_client_bridge
+              capabilities:
+                - {path: robonix/primitive/audio/mic, description: "Client microphone audio."}
+                - {path: robonix/primitive/audio/speaker, description: "Client speaker audio."}
+
+description:
+  summary: "Dedicated Robonix Client voice profile for Go2 named sport actions."
+  can_do:
+    - "Discover and preview named actions without moving."
+    - "Dispatch explicit Chinese dance, greeting, stretch, handstand and other prepared requests through one Go2 daemon."
+  cannot_do:
+    - "Navigate or follow a person in this dedicated action session."
+    - "Claim physical completion from an SDK acknowledgement."
+    - "Execute actions outside the eight published Go2 routines."

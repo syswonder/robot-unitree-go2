@@ -1,0 +1,10 @@
+rbnx-build/
+.runtime/
+*.log
+__pycache__/
+*.pyc
+.env
+.env.*
+*.key
+*.pem
+logs/

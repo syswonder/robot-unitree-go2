@@ -1,0 +1,6 @@
+string name
+string request_id
+---
+bool accepted
+string run_id
+string message

@@ -1,0 +1,54 @@
+manifestVersion: 1
+name: robonix-go2-sport-actions-dedicated
+
+# Run this profile instead of the navigation/following profile. The Skill owns
+# the SDK daemon only when an action is requested; no Nav2 chassis writer runs.
+env:
+  ROBONIX_PROVIDER_BIND_HOST: 127.0.0.1
+  ROBONIX_ADVERTISE_HOST: 127.0.0.1
+  SPEECH_BIND_ADDR: 127.0.0.1
+
+system:
+  atlas: {listen: '127.0.0.1:50051', log: info}
+  executor: {listen: '127.0.0.1:50061', log: info}
+  pilot:
+    listen: '127.0.0.1:50071'
+    log: info
+    vlm:
+      upstream: ${VLM_BASE_URL}
+      api_key: ${VLM_API_KEY}
+      model: ${VLM_MODEL}
+      api_format: openai
+  liaison: {listen: '127.0.0.1:50081', log: info}
+  soma:
+    listen: '127.0.0.1:50091'
+    robot_yaml: ${ROBONIX_DEPLOY_DIR}/deploy/sport-actions/soma.yaml
+    log: info
+
+primitive:
+  - name: audio_client_bridge
+    path: ${ROBONIX_AUDIO_BRIDGE_PATH}
+    config:
+      transport: reverse
+      listen_host: 127.0.0.1
+      listen_port: 60002
+
+service:
+  - name: speech
+    path: ${ROBONIX_SPEECH_PATH}
+    config:
+      speech_backend: local
+      disable_whisper: true
+      funasr_model: ${FUNASR_MODEL_DIR}
+      funasr_device: cpu
+      default_speaker_provider_id: audio_client_bridge
+      wake_words: ["罗伯尼克斯", "罗伯特"]
+
+skill:
+  - name: go2_sport_actions
+    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sport_actions
+    config:
+      backend: managed
+      daemon_socket: ${GO2_SDK_SOCKET}
+      daemon_binary: ${ROBONIX_DEPLOY_DIR}/packages/go2_chassis/rbnx-build/sdk/install/bin/go2_sport_daemon
+      network_interface: ${GO2_NETWORK_INTERFACE}

@@ -1,0 +1,12 @@
+[contract]
+id = "robonix/skill/go2_sport_actions/execute_utterance"
+version = "1"
+kind = "skill"
+idl = "go2_sport_actions/srv/ExecuteUtterance.srv"
+description = "Parse an explicit Chinese Go2 stunt command and dispatch one named action through the existing chassis daemon; report a run ID, not physical completion."
+
+[mode]
+type = "rpc"
+
+[semantics]
+user_invocable = true

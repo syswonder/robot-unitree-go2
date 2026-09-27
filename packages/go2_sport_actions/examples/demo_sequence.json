@@ -1,0 +1,46 @@
+{
+  "description": "Issue one execute call at a time; poll status and confirm posture before advancing.",
+  "capability": "robonix/skill/go2_sport_actions/execute",
+  "steps": [
+    {
+      "name": "hello",
+      "utterance": "打个招呼",
+      "request_id": "CHANGE_ME_session-1"
+    },
+    {
+      "name": "stretch",
+      "utterance": "伸展一下",
+      "request_id": "CHANGE_ME_session-2"
+    },
+    {
+      "name": "new_year_greeting",
+      "utterance": "拜年",
+      "request_id": "CHANGE_ME_session-3"
+    },
+    {
+      "name": "crouch",
+      "utterance": "卧倒再起身",
+      "request_id": "CHANGE_ME_session-4"
+    },
+    {
+      "name": "dance_1",
+      "utterance": "跳第一支舞",
+      "request_id": "CHANGE_ME_session-5"
+    },
+    {
+      "name": "dance_2",
+      "utterance": "跳第二支舞",
+      "request_id": "CHANGE_ME_session-6"
+    },
+    {
+      "name": "handstand",
+      "utterance": "做个倒立",
+      "request_id": "CHANGE_ME_session-7"
+    },
+    {
+      "name": "handstand_walk",
+      "utterance": "倒立向前走",
+      "request_id": "CHANGE_ME_session-8"
+    }
+  ]
+}
