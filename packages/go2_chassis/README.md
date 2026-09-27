@@ -15,11 +15,30 @@ staged test, watchdog, cancel, and stop checks are approved at the robot.
 ## Components
 
 - `ros2_ws/src/go2_chassis_adapter`: ROS-only adapter; never links SDK2.
-- `sdk_daemon`: SDK2-only `Move`/`StopMove` process; no ROS dependency.
+- `sdk_daemon`: SDK2-only `Move`/`StopMove` and named sport-action process; no ROS dependency.
 - `include/go2_chassis`: wire protocol and independently testable guards.
 - `tests`: offline fake-client tests that cannot contact a robot.
 - `go2_chassis/runtime_config.py`: strict `Driver(CMD_INIT)` config validation.
 - `scripts`: package build/start plus motion-disabled diagnostic wrappers.
+
+## Named sport actions
+
+The optional [sport-action Skill](../go2_sport_actions/README.md) uses this same
+daemon in a dedicated session. Protocol operation 7 carries an explicit named
+action ID; the original Move/StopMove wire layout is unchanged. Only the SDK
+calls needed by the eight published routines are accepted. Boot and health
+checks do not execute posture APIs. Fresh advancing SportModeState and the
+command watchdog supervise active actions. A process-lifetime interface owner
+token prevents two new daemons on the same interface; an existing live IPC
+socket is not overwritten.
+
+Named animations can emit their exact request before SDK timeout 3104. Only
+that witnessed request may count as dispatch; it never means remote or physical
+completion. Move, StopMove and classic-walk RPC verification remain unchanged.
+The Skill holds heartbeat during the bounded animation window and then stops.
+Supervised evidence is documented in the Skill's acceptance record.
+
+## Navigation build and runtime
 
 Set `UNITREE_ROS2_SETUP` to the setup file containing `unitree_go` messages and
 `UNITREE_SDK2_DIR` to the official SDK2 checkout before building. The package

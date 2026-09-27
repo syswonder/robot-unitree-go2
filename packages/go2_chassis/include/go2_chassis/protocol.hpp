@@ -22,7 +22,29 @@ enum class CommandOp : std::uint8_t {
   kStop = 4,
   kPing = 5,
   kRestoreClassicWalk = 6,
+  kSportAction = 7,
 };
+
+// Named high-level Go2 SportClient calls.  Existing packet fields and the
+// navigation protocol remain unchanged; reserved8 carries this ID only for
+// kSportAction.  A call acknowledgement is not physical completion evidence.
+enum class SportAction : std::uint8_t {
+  kHello = 1,
+  kStretch = 2,
+  kDance1 = 3,
+  kDance2 = 4,
+  kHandstandEnter = 5,
+  kHandstandExit = 6,
+  // Keep the unpublished experimental IDs 7..13 and 16 unassigned.
+  kStandDown = 14,
+  kStandUp = 15,
+  kNewYearScrape = 17,
+};
+
+inline bool IsKnownSportAction(std::uint8_t value) {
+  return (value >= 1U && value <= 6U) || value == 14U ||
+         value == 15U || value == 17U;
+}
 
 enum class ReplyCode : std::int32_t {
   kOk = 0,
@@ -111,6 +133,7 @@ inline bool IsKnownOperation(std::uint8_t value) {
     case CommandOp::kStop:
     case CommandOp::kPing:
     case CommandOp::kRestoreClassicWalk:
+    case CommandOp::kSportAction:
       return true;
   }
   return false;
@@ -152,6 +175,12 @@ inline ReplyCode ValidateCommand(const CommandPacket &packet,
     return fail(ReplyCode::kMalformed, "packet lifetime is invalid");
   }
   const auto operation = static_cast<CommandOp>(packet.operation);
+  if (packet.reserved16 != 0U ||
+      (operation == CommandOp::kSportAction
+           ? !IsKnownSportAction(packet.reserved8)
+           : packet.reserved8 != 0U)) {
+    return fail(ReplyCode::kMalformed, "invalid action ID or reserved field");
+  }
   if (operation != CommandOp::kMove && !IsZeroVelocity(packet)) {
     return fail(ReplyCode::kMalformed, "non-move packet carries velocity");
   }
@@ -176,6 +205,17 @@ inline CommandPacket MakeCommand(CommandOp operation, std::uint64_t sequence,
   packet.vx = vx;
   packet.vy = vy;
   packet.wz = wz;
+  Seal(packet);
+  return packet;
+}
+
+inline CommandPacket MakeSportActionCommand(SportAction action,
+                                            std::uint64_t sequence,
+                                            std::uint64_t now_monotonic_ns,
+                                            std::uint64_t lifetime_ns) {
+  CommandPacket packet = MakeCommand(CommandOp::kSportAction, sequence,
+                                     now_monotonic_ns, lifetime_ns);
+  packet.reserved8 = static_cast<std::uint8_t>(action);
   Seal(packet);
   return packet;
 }

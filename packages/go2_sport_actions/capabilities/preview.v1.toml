@@ -1,0 +1,9 @@
+[contract]
+id = "robonix/skill/go2_sport_actions/preview"
+version = "1"
+kind = "skill"
+idl = "go2_sport_actions/srv/PreviewAction.srv"
+[mode]
+type = "rpc"
+[semantics]
+user_invocable = true

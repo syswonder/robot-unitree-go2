@@ -1,0 +1,26 @@
+manifestVersion: 1
+package:
+  name: robonix.skill.unitree.go2.sport_actions
+  version: 0.1.0
+  description: Eight Go2 EDU sport actions with Robonix Client voice control, reusable execution/status/cancel APIs, and supervised physical acceptance.
+  license: Apache-2.0
+  tags: [skill, unitree, go2, sport, actions]
+  maintainers: [Origamii520 <zxq13204030517@163.com>]
+build: bash build.sh
+start: bash start.sh
+capabilities:
+  - name: robonix/skill/go2_sport_actions/driver
+    path: capabilities/driver.v1.toml
+  - name: robonix/skill/go2_sport_actions/list
+    path: capabilities/list.v1.toml
+  - name: robonix/skill/go2_sport_actions/preview
+    path: capabilities/preview.v1.toml
+  - name: robonix/skill/go2_sport_actions/execute
+    path: capabilities/execute.v1.toml
+  - name: robonix/skill/go2_sport_actions/execute_utterance
+    path: capabilities/execute_utterance.v1.toml
+  - name: robonix/skill/go2_sport_actions/status
+    path: capabilities/status.v1.toml
+  - name: robonix/skill/go2_sport_actions/cancel
+    path: capabilities/cancel.v1.toml
+depends: []

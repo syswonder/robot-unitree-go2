@@ -47,6 +47,7 @@ inline constexpr std::int32_t MotionIpcReplyTimeoutMs(CommandOp operation) {
     case CommandOp::kStop:
     case CommandOp::kDisarm:
     case CommandOp::kRestoreClassicWalk:
+    case CommandOp::kSportAction:
       return kMotionCommandIpcReplyTimeoutMs;
     case CommandOp::kPing:
       return kMotionPingIpcReplyTimeoutMs;

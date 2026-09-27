@@ -66,6 +66,9 @@ else
 fi
 python3 -m unittest discover \
   -s "$DEPLOY_DIR/packages/go2_chassis/tests" -p 'test_*.py'
+PYTHONPATH="$DEPLOY_DIR/packages/go2_sport_actions${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 -m unittest discover \
+    -s "$DEPLOY_DIR/packages/go2_sport_actions/tests" -p 'test_*.py'
 PYTHONPATH="$DEPLOY_DIR/packages/go2_description${PYTHONPATH:+:$PYTHONPATH}" \
   python3 -m unittest discover \
     -s "$DEPLOY_DIR/packages/go2_description/tests" -p 'test_*.py'

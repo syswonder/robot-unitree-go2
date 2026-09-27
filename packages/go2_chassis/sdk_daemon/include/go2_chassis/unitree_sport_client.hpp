@@ -16,6 +16,7 @@ namespace go2_chassis {
 
 class AuditedSportClient;
 class UnitreeRpcObserver;
+class SportStateObserver;
 
 class UnitreeSportClient final : public ISportClient {
  public:
@@ -31,16 +32,20 @@ class UnitreeSportClient final : public ISportClient {
   std::int32_t ClassicWalk(bool enabled) override;
   std::int32_t Move(float vx, float vy, float wz) override;
   std::int32_t StopMove() override;
+  std::int32_t SportActionCall(SportAction action) override;
+  bool FreshSportState(std::uint64_t now_monotonic_ns) const override;
 
  private:
   std::int32_t VerifiedCall(std::int64_t api_id,
                             const std::function<std::int32_t()> &call,
                             std::int32_t expected_priority,
                             bool expected_noreply,
-                            const std::string &expected_parameter);
+                            const std::string &expected_parameter,
+                            bool allow_witnessed_timeout_dispatch = false);
 
   std::unique_ptr<AuditedSportClient> client_;
   std::unique_ptr<UnitreeRpcObserver> rpc_observer_;
+  std::unique_ptr<SportStateObserver> state_observer_;
 };
 
 }  // namespace go2_chassis
