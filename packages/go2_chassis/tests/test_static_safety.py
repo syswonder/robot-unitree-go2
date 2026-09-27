@@ -503,20 +503,27 @@ class StaticSafetyTest(unittest.TestCase):
         self.assertIn("runtime.sdk_daemon_env(_daemon_binary)", provider)
         self.assertIn('environment["LD_LIBRARY_PATH"]', runtime)
 
-    def test_runtime_has_no_posture_or_low_level_api(self) -> None:
+    def test_posture_calls_are_confined_to_audited_sdk_daemon(self) -> None:
         runtime_files = list((ROOT / "include").rglob("*.hpp"))
         runtime_files += list((ROOT / "sdk_daemon").rglob("*.cpp"))
         runtime_files += list((ROOT / "ros2_ws").rglob("*.cpp"))
         source = "\n".join(path.read_text() for path in runtime_files)
         for forbidden in (
-            "StandUp",
-            "StandDown",
             "RecoveryStand",
             "BalanceStand",
             "lowcmd",
             "/lowcmd",
         ):
             self.assertNotIn(forbidden, source)
+
+        # Named StandDown/StandUp actions now live in the isolated SDK daemon.
+        # The ROS navigation adapter must still expose no posture or direct
+        # action API, and must remain the only velocity path in Nav2 sessions.
+        ros_adapter = "\n".join(
+            path.read_text() for path in (ROOT / "ros2_ws").rglob("*.cpp")
+        )
+        for forbidden in ("StandUp", "StandDown", "HandStand", "Dance1"):
+            self.assertNotIn(forbidden, ros_adapter)
 
         # The isolated SDK daemon may subscribe to the raw sport RPC pair to
         # independently verify SDK2 request/response correlation.  It must not
@@ -568,10 +575,9 @@ class StaticSafetyTest(unittest.TestCase):
         self.assertNotIn("ROBOT_API_ID_INTERNAL_API_NOOP", sdk_client)
         self.assertNotIn("ProbeOwnership", sdk_client)
         self.assertNotIn("owned_lease_id_", sdk_client)
-        self.assertIn(
-            "{api_id, 0, false, expected_noreply, expected_priority,\n"
-            "         expected_parameter}",
+        self.assertRegex(
             sdk_client,
+            r"\{\s*api_id, 0, false, expected_noreply, expected_priority,\s*expected_parameter\}",
         )
         self.assertIn("constexpr std::int32_t kMovePriority = 0", sdk_client)
         self.assertIn(

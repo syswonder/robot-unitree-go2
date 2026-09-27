@@ -39,16 +39,26 @@ class FakeSportClient final : public go2_chassis::ISportClient {
     ++stop_calls;
     return stop_result;
   }
+  std::int32_t SportActionCall(go2_chassis::SportAction action) override {
+    ++sport_action_calls;
+    last_sport_action = action;
+    return sport_action_result;
+  }
+  bool FreshSportState(std::uint64_t) const override { return sport_state_fresh; }
 
   bool initialized{false};
   int prepare_arm_calls{0};
   int classic_walk_calls{0};
   int move_calls{0};
   int stop_calls{0};
+  int sport_action_calls{0};
+  go2_chassis::SportAction last_sport_action{go2_chassis::SportAction::kHello};
   std::int32_t prepare_arm_result{0};
   std::int32_t classic_walk_result{0};
   std::int32_t move_result{0};
   std::int32_t stop_result{0};
+  std::int32_t sport_action_result{0};
+  bool sport_state_fresh{true};
   float vx{0.0F};
   float vy{0.0F};
   float wz{0.0F};
@@ -89,6 +99,101 @@ void TestMotionWatchdogProfileGate() {
   assert(MotionWatchdogDeploymentEligible(true, 300U));
   assert(!MotionWatchdogDeploymentEligible(true, 301U));
   assert(!MotionWatchdogDeploymentEligible(true, 1000U));
+}
+
+void TestSportActionUsesExistingDaemonOwner() {
+  using go2_chassis::CommandOp;
+  using go2_chassis::ReplyCode;
+  using go2_chassis::SportAction;
+  constexpr std::uint64_t now = 1'000'000'000ULL;
+  auto action = go2_chassis::MakeSportActionCommand(
+      SportAction::kDance1, 1U, now, 100'000'000ULL);
+  assert(go2_chassis::ValidateCommand(action, now) == ReplyCode::kOk);
+  action = go2_chassis::MakeSportActionCommand(
+      SportAction::kStandDown, 1U, now, 100'000'000ULL);
+  assert(go2_chassis::ValidateCommand(action, now) == ReplyCode::kOk);
+  action = go2_chassis::MakeSportActionCommand(
+      SportAction::kNewYearScrape, 1U, now, 100'000'000ULL);
+  assert(go2_chassis::ValidateCommand(action, now) == ReplyCode::kOk);
+  action.reserved8 = 255U;
+  go2_chassis::Seal(action);
+  assert(go2_chassis::ValidateCommand(action, now) == ReplyCode::kMalformed);
+  for (const std::uint8_t removed : {7U, 8U, 9U, 10U, 11U, 12U, 13U, 16U}) {
+    action.reserved8 = removed;
+    go2_chassis::Seal(action);
+    assert(go2_chassis::ValidateCommand(action, now) == ReplyCode::kMalformed);
+  }
+  action = go2_chassis::MakeCommand(CommandOp::kPing, 1U, now,
+                                    100'000'000ULL);
+  action.reserved8 = static_cast<std::uint8_t>(SportAction::kDance1);
+  go2_chassis::Seal(action);
+  assert(go2_chassis::ValidateCommand(action, now) == ReplyCode::kMalformed);
+
+  FakeSportClient client;
+  go2_chassis::DaemonCore disabled({}, client);
+  action = go2_chassis::MakeSportActionCommand(SportAction::kDance1, 1U, now,
+                                                100'000'000ULL);
+  assert(disabled.Handle(action, now).code ==
+         static_cast<std::int32_t>(ReplyCode::kMotionDisabled));
+  assert(client.sport_action_calls == 0);
+
+  go2_chassis::DaemonConfig config;
+  config.allow_motion = true;
+  go2_chassis::DaemonCore daemon(config, client);
+  assert(daemon.Handle(action, now).code ==
+         static_cast<std::int32_t>(ReplyCode::kNotArmed));
+  const auto arm = go2_chassis::MakeCommand(CommandOp::kArm, 2U, now + 1U,
+                                            100'000'000ULL);
+  assert(daemon.Handle(arm, now + 1U).code ==
+         static_cast<std::int32_t>(ReplyCode::kOk));
+  action = go2_chassis::MakeSportActionCommand(SportAction::kDance1, 3U,
+                                                now + 2U, 100'000'000ULL);
+  assert(daemon.Handle(action, now + 2U).code ==
+         static_cast<std::int32_t>(ReplyCode::kOk));
+  assert(client.sport_action_calls == 1);
+  assert(client.last_sport_action == SportAction::kDance1);
+  assert(daemon.moving());
+  const auto stop = go2_chassis::MakeCommand(CommandOp::kStop, 4U, now + 3U,
+                                             100'000'000ULL);
+  assert(daemon.Handle(stop, now + 3U).code ==
+         static_cast<std::int32_t>(ReplyCode::kOk));
+  assert(!daemon.moving());
+  const auto disarm = go2_chassis::MakeCommand(CommandOp::kDisarm, 5U,
+                                               now + 4U, 100'000'000ULL);
+  assert(daemon.Handle(disarm, now + 4U).code ==
+         static_cast<std::int32_t>(ReplyCode::kOk));
+
+  FakeSportClient failing_client;
+  failing_client.sport_action_result = -1;
+  go2_chassis::DaemonCore failing(config, failing_client);
+  assert(failing.Handle(arm, now + 1U).code ==
+         static_cast<std::int32_t>(ReplyCode::kOk));
+  assert(failing.Handle(action, now + 2U).code ==
+         static_cast<std::int32_t>(ReplyCode::kSdkError));
+  assert(failing_client.stop_calls == 1);
+  assert(!failing.armed());
+
+  FakeSportClient stale_client;
+  stale_client.sport_state_fresh = false;
+  go2_chassis::DaemonCore stale(config, stale_client);
+  assert(stale.Handle(arm, now + 1U).code ==
+         static_cast<std::int32_t>(ReplyCode::kOk));
+  assert(stale.Handle(action, now + 2U).code ==
+         static_cast<std::int32_t>(ReplyCode::kFaultLatched));
+  assert(stale_client.sport_action_calls == 0);
+  assert(stale_client.stop_calls == 1);
+
+  FakeSportClient dropped_state_client;
+  go2_chassis::DaemonCore dropped_state(config, dropped_state_client);
+  assert(dropped_state.Handle(arm, now + 1U).code ==
+         static_cast<std::int32_t>(ReplyCode::kOk));
+  assert(dropped_state.Handle(action, now + 2U).code ==
+         static_cast<std::int32_t>(ReplyCode::kOk));
+  dropped_state_client.sport_state_fresh = false;
+  assert(dropped_state.CheckWatchdog(now + 3U));
+  assert(dropped_state.watchdog_reason() == "sport_state_stale");
+  assert(!dropped_state.armed());
+  assert(dropped_state_client.stop_calls == 1);
 }
 
 void TestMotionIpcTimingContract() {
@@ -636,6 +741,42 @@ void TestRpcAcknowledgementMustMatchFullIdentityLeaseAndStatus() {
       true, false, 32345, 1008, 0, true, 0,
       R"({"x":0.05,"y":0.0,"z":0.0})"};
   const go2_chassis::RpcResponseEvidence no_response{};
+  const go2_chassis::RpcCallExpectation dance1{
+      1022, 0, false, false, 0, ""};
+  const go2_chassis::RpcRequestEvidence dance1_request{
+      true, false, 33345, 1022, 0, false, 0, ""};
+  const auto dance1_timeout = go2_chassis::ValidateRpcCallEvidence(
+      dance1, dance1_request, no_response, 3104);
+  assert(go2_chassis::WitnessedTimedOutActionDispatch(
+      dance1, dance1_timeout, 3104));
+  auto ambiguous_dance1_request = dance1_request;
+  ambiguous_dance1_request.ambiguous = true;
+  assert(!go2_chassis::WitnessedTimedOutActionDispatch(
+      dance1, go2_chassis::ValidateRpcCallEvidence(
+                  dance1, ambiguous_dance1_request, no_response, 3104),
+      3104));
+  auto wrong_dance1_request = dance1_request;
+  wrong_dance1_request.api_id = 1008;
+  assert(!go2_chassis::WitnessedTimedOutActionDispatch(
+      dance1, go2_chassis::ValidateRpcCallEvidence(
+                  dance1, wrong_dance1_request, no_response, 3104),
+      3104));
+  assert(!go2_chassis::WitnessedTimedOutActionDispatch(
+      dance1, go2_chassis::ValidateRpcCallEvidence(
+                  dance1, dance1_request, no_response, 3102),
+      3104));
+  const go2_chassis::RpcResponseEvidence accepted_dance1_response{
+      true, false, 33345, 1022, 0};
+  assert(go2_chassis::WitnessedTimedOutActionDispatch(
+      dance1, go2_chassis::ValidateRpcCallEvidence(
+                  dance1, dance1_request, accepted_dance1_response, 3104),
+      3104));
+  const go2_chassis::RpcResponseEvidence rejected_dance1_response{
+      true, false, 33345, 1022, 7001};
+  assert(!go2_chassis::WitnessedTimedOutActionDispatch(
+      dance1, go2_chassis::ValidateRpcCallEvidence(
+                  dance1, dance1_request, rejected_dance1_response, 3104),
+      3104));
   result = go2_chassis::ValidateRpcCallEvidence(
       move_noreply, move_request, no_response, 0);
   assert(result.ok());
@@ -934,6 +1075,7 @@ void TestClassicWalkPreservationUsesASeparateCleanPhase() {
   assert(watchdog.Handle(move, now + 1U).code ==
          static_cast<std::int32_t>(go2_chassis::ReplyCode::kOk));
   assert(watchdog.CheckWatchdog(now + config.watchdog_ns + 2U));
+  assert(watchdog.watchdog_reason() == "command_heartbeat_stale");
   assert(watchdog_client.stop_calls == 1);
   assert(watchdog_client.classic_walk_calls == 1);
 
@@ -1046,6 +1188,7 @@ void TestStagedNav2DaemonEnvelopeStopsAndDisarms() {
 int main() {
   TestProtocol();
   TestMotionWatchdogProfileGate();
+  TestSportActionUsesExistingDaemonOwner();
   TestMotionIpcTimingContract();
   TestGuardDefaultsFailClosed();
   TestUnknownDefaultModeCannotArm();

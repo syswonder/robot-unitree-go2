@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -48,6 +49,37 @@ constexpr float kStagedNav2MaxWz = 0.40F;
 // 300 ms daemon watchdog remains mandatory.
 constexpr std::uint64_t kStagedNav2MaxMotionMs = 0U;
 std::atomic<bool> g_shutdown_requested{false};
+
+// An abstract Unix socket is a process-lifetime, filesystem-free owner token.
+// Navigation and the standalone sport Skill may use different IPC paths, but
+// must never initialize two Go2 SportClients on the same network interface.
+int AcquireSportInterface(const std::string &network_interface) {
+  const std::string name = "robonix-go2-sport-owner-" + network_interface;
+  if (name.size() + 1U > sizeof(sockaddr_un::sun_path)) {
+    throw std::runtime_error("network interface name is too long for owner token");
+  }
+  const int descriptor = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (descriptor < 0) {
+    throw std::runtime_error("cannot create sport owner token");
+  }
+  sockaddr_un address {};
+  address.sun_family = AF_UNIX;
+  address.sun_path[0] = '\0';
+  std::memcpy(address.sun_path + 1, name.data(), name.size());
+  const socklen_t length = static_cast<socklen_t>(
+      offsetof(sockaddr_un, sun_path) + 1U + name.size());
+  if (::bind(descriptor, reinterpret_cast<const sockaddr *>(&address),
+             length) != 0) {
+    const int saved_errno = errno;
+    ::close(descriptor);
+    throw std::runtime_error(
+        saved_errno == EADDRINUSE
+            ? "another Go2 sport daemon already owns this interface"
+            : "cannot bind sport owner token: " +
+                  std::string(std::strerror(saved_errno)));
+  }
+  return descriptor;
+}
 
 struct Options {
   std::string socket_path;
@@ -243,6 +275,21 @@ void RemoveOwnedSocket(const std::filesystem::path &socket_path) {
   if (!S_ISSOCK(socket_stat.st_mode) || socket_stat.st_uid != ::geteuid()) {
     throw std::runtime_error("refusing to replace a non-socket or foreign path");
   }
+  const int probe = ::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+  if (probe < 0) {
+    throw std::runtime_error("cannot inspect existing IPC socket listener");
+  }
+  sockaddr_un address {};
+  address.sun_family = AF_UNIX;
+  std::strncpy(address.sun_path, socket_path.c_str(),
+               sizeof(address.sun_path) - 1U);
+  const int connected = ::connect(
+      probe, reinterpret_cast<const sockaddr *>(&address), sizeof(address));
+  const int connect_errno = errno;
+  ::close(probe);
+  if (connected == 0 || connect_errno != ECONNREFUSED) {
+    throw std::runtime_error("refusing to replace an active IPC socket");
+  }
   if (::unlink(socket_path.c_str()) != 0) {
     throw std::runtime_error("cannot remove stale owned socket");
   }
@@ -402,8 +449,8 @@ int Run(const Options &options, go2_chassis::ISportClient &client) {
     }
 
       if (core.CheckWatchdog(MonotonicNowNs())) {
-        std::cerr
-            << "SDK watchdog expired: StopMove requested and daemon disarmed\n";
+        std::cerr << "SDK watchdog stop: reason=" << core.watchdog_reason()
+                  << "; StopMove requested and daemon disarmed\n";
       }
     }
   } catch (...) {
@@ -422,6 +469,13 @@ int main(int argc, char **argv) {
     const Options options = ParseOptions(argc, argv);
     std::signal(SIGINT, SignalHandler);
     std::signal(SIGTERM, SignalHandler);
+
+    // Keep the descriptor open for the daemon lifetime. The kernel releases
+    // the abstract name on process exit, including abnormal termination.
+    const int owner_descriptor = options.allow_motion
+                                     ? AcquireSportInterface(options.network_interface)
+                                     : -1;
+    (void)owner_descriptor;
 
     go2_chassis::UnitreeSportClient client;
     if (options.allow_motion) {

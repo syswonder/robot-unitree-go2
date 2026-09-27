@@ -1,5 +1,6 @@
 #include "go2_chassis/unitree_sport_client.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -14,9 +15,11 @@
 
 #include <unitree/robot/channel/channel_factory.hpp>
 #include <unitree/robot/channel/channel_subscriber.hpp>
+#include <unitree/idl/go2/SportModeState_.hpp>
 #include <unitree/robot/go2/sport/sport_client.hpp>
 #include <unitree/robot/go2/sport/sport_api.hpp>
 #include <unitree/robot/go2/public/jsonize_type.hpp>
+#include <unitree/robot/internal/internal_error.hpp>
 #include <unitree/robot/internal/internal_request_response.hpp>
 
 #include "go2_chassis/motion_timing.hpp"
@@ -33,12 +36,23 @@ constexpr std::int32_t kControlPathUnavailable = -4201;
 constexpr std::int32_t kMovePriority = 0;
 constexpr std::int32_t kStopMovePriority = 1;
 constexpr std::int32_t kClassicWalkPriority = 0;
+constexpr std::int32_t kSportActionPriority = 0;
 constexpr char kSportRequestTopic[] = "rt/api/sport/request";
 constexpr char kSportResponseTopic[] = "rt/api/sport/response";
+constexpr char kSportStateTopic[] = "rt/sportmodestate";
+constexpr char kLowFrequencySportStateTopic[] = "rt/lf/sportmodestate";
+constexpr std::uint64_t kSportActionStateMaxAgeNs = 200'000'000ULL;
 constexpr auto kEvidenceArrivalWait =
     std::chrono::milliseconds(kRpcEvidenceArrivalTimeoutMs);
 constexpr auto kEvidenceSettlementWait =
     std::chrono::milliseconds(kRpcEvidenceSettlementMs);
+
+std::uint64_t SteadyNowNs() {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
 
 }  // namespace
 
@@ -209,6 +223,74 @@ class UnitreeRpcObserver {
       response_subscriber_;
 };
 
+// The action Skill owns the same daemon socket as navigation would, but not
+// the ROS navigation adapter.  This subscriber preserves live state evidence
+// for action commands without creating a second SportClient or publisher.
+class SportStateObserver {
+ public:
+  void Initialize() {
+    primary_subscriber_ = std::make_unique<unitree::robot::ChannelSubscriber<
+        unitree_go::msg::dds_::SportModeState_>>(kSportStateTopic);
+    primary_subscriber_->InitChannel(
+        [this](const void *message) { OnState(message, primary_); }, 16);
+    low_frequency_subscriber_ =
+        std::make_unique<unitree::robot::ChannelSubscriber<
+            unitree_go::msg::dds_::SportModeState_>>(
+            kLowFrequencySportStateTopic);
+    low_frequency_subscriber_->InitChannel(
+        [this](const void *message) { OnState(message, low_frequency_); }, 16);
+  }
+
+  bool Fresh(std::uint64_t now_ns) const {
+    return FreshStream(primary_, now_ns) ||
+           FreshStream(low_frequency_, now_ns);
+  }
+
+ private:
+  struct StreamTracker {
+    std::atomic<std::uint64_t> last_source_ns{0U};
+    std::atomic<std::uint64_t> last_arrival_ns{0U};
+  };
+
+  static bool FreshStream(const StreamTracker &stream, std::uint64_t now_ns) {
+    const auto arrival_ns =
+        stream.last_arrival_ns.load(std::memory_order_acquire);
+    return arrival_ns != 0U && now_ns >= arrival_ns &&
+           now_ns - arrival_ns <= kSportActionStateMaxAgeNs;
+  }
+
+  static void OnState(const void *message, StreamTracker &stream) {
+    if (message == nullptr) {
+      return;
+    }
+    const auto &state =
+        *static_cast<const unitree_go::msg::dds_::SportModeState_ *>(message);
+    const auto &stamp = state.stamp();
+    if (stamp.sec() <= 0 || stamp.nanosec() >= 1'000'000'000U) {
+      return;
+    }
+    const auto source_ns =
+        static_cast<std::uint64_t>(stamp.sec()) * 1'000'000'000ULL +
+        stamp.nanosec();
+    auto previous = stream.last_source_ns.load(std::memory_order_relaxed);
+    while (source_ns > previous) {
+      if (stream.last_source_ns.compare_exchange_weak(
+              previous, source_ns, std::memory_order_acq_rel)) {
+        stream.last_arrival_ns.store(SteadyNowNs(),
+                                     std::memory_order_release);
+        return;
+      }
+    }
+  }
+
+  StreamTracker primary_;
+  StreamTracker low_frequency_;
+  std::unique_ptr<unitree::robot::ChannelSubscriber<
+      unitree_go::msg::dds_::SportModeState_>> primary_subscriber_;
+  std::unique_ptr<unitree::robot::ChannelSubscriber<
+      unitree_go::msg::dds_::SportModeState_>> low_frequency_subscriber_;
+};
+
 UnitreeSportClient::UnitreeSportClient() = default;
 UnitreeSportClient::~UnitreeSportClient() = default;
 
@@ -222,6 +304,8 @@ bool UnitreeSportClient::Initialize(const std::string &network_interface,
     std::cerr << "Unitree SDK2 init: RPC observer begin\n";
     rpc_observer_->Initialize();
     std::cerr << "Unitree SDK2 init: RPC observer ready\n";
+    state_observer_ = std::make_unique<SportStateObserver>();
+    state_observer_->Initialize();
     // The daemon uses the official lease-disabled Go2 client path. Every
     // command is still independently accepted only with exact identity, API,
     // lease zero, noreply policy and SDK result evidence. Response-bearing
@@ -246,8 +330,13 @@ bool UnitreeSportClient::Initialize(const std::string &network_interface,
     }
   }
   rpc_observer_.reset();
+  state_observer_.reset();
   client_.reset();
   return false;
+}
+
+bool UnitreeSportClient::FreshSportState(std::uint64_t now_monotonic_ns) const {
+  return state_observer_ != nullptr && state_observer_->Fresh(now_monotonic_ns);
 }
 
 std::int32_t UnitreeSportClient::PrepareArm() {
@@ -269,18 +358,31 @@ std::int32_t UnitreeSportClient::PrepareArm() {
 std::int32_t UnitreeSportClient::VerifiedCall(
     std::int64_t api_id, const std::function<std::int32_t()> &call,
     std::int32_t expected_priority, bool expected_noreply,
-    const std::string &expected_parameter) {
+    const std::string &expected_parameter,
+    bool allow_witnessed_timeout_dispatch) {
   if (client_ == nullptr || rpc_observer_ == nullptr) {
     std::cerr << "Verified sport RPC unavailable: api_id=" << api_id << "\n";
     return kControlPathUnavailable;
   }
   try {
-    rpc_observer_->Begin(
-        {api_id, 0, false, expected_noreply, expected_priority,
-         expected_parameter});
+    const RpcCallExpectation expected{
+        api_id, 0, false, expected_noreply, expected_priority,
+        expected_parameter};
+    rpc_observer_->Begin(expected);
     try {
       const std::int32_t sdk_result = call();
       const RpcEvidenceResult evidence = rpc_observer_->Finish(sdk_result);
+      if (allow_witnessed_timeout_dispatch &&
+          WitnessedTimedOutActionDispatch(
+              expected, evidence,
+              unitree::robot::UT_ROBOT_ERR_CLIENT_API_TIMEOUT)) {
+        std::cerr << "Witnessed long action request after SDK timeout: api_id="
+                  << api_id << " request_identity="
+                  << evidence.request_identity_id
+                  << "; remote acceptance and completion unverified; "
+                     "bounded Skill heartbeat and StopMove remain required\n";
+        return 0;
+      }
       const std::int32_t result = RpcEvidenceReturnCode(evidence);
       if (result != 0) {
         std::cerr << "Verified sport RPC failed: api_id=" << api_id
@@ -372,6 +474,63 @@ std::int32_t UnitreeSportClient::StopMove() {
   return VerifiedCall(unitree::robot::go2::ROBOT_SPORT_API_ID_STOPMOVE,
                       [this]() { return client_->StopMove(); },
                       kStopMovePriority, false, "");
+}
+
+std::int32_t UnitreeSportClient::SportActionCall(SportAction action) {
+  if (client_ == nullptr) {
+    return kControlPathUnavailable;
+  }
+  const auto call = [this](std::int64_t api_id,
+                           const std::function<std::int32_t()> &method,
+                           const std::string &parameter = "") {
+    // Named firmware actions can continue after the SDK's short synchronous
+    // wait expires. Only the exact witnessed request is accepted as dispatch;
+    // actual completion remains an operator-observed result.
+    return VerifiedCall(api_id, method, kSportActionPriority, false, parameter,
+                        true);
+  };
+  switch (action) {
+    case SportAction::kHello:
+      return call(unitree::robot::go2::ROBOT_SPORT_API_ID_HELLO,
+                  [this]() { return client_->Hello(); });
+    case SportAction::kStretch:
+      return call(unitree::robot::go2::ROBOT_SPORT_API_ID_STRETCH,
+                  [this]() { return client_->Stretch(); });
+    case SportAction::kDance1:
+      // Dance1 lasts about 20 seconds on this Go2. The pinned SDK's 100 ms
+      // synchronous deadline returns 3104 after emitting the request; treating
+      // that as a completed action caused an immediate fault StopMove and only
+      // a twitch. Accept only the exact witnessed dispatch for this one action;
+      // the Skill keeps PINGing and sends StopMove after its bounded window.
+      return VerifiedCall(unitree::robot::go2::ROBOT_SPORT_API_ID_DANCE1,
+                          [this]() { return client_->Dance1(); },
+                          kSportActionPriority, false, "", true);
+    case SportAction::kDance2:
+      // Use the same exact-request dispatch handling as Dance1. The Skill
+      // supervises this named animation and ends it with StopMove.
+      return VerifiedCall(unitree::robot::go2::ROBOT_SPORT_API_ID_DANCE2,
+                          [this]() { return client_->Dance2(); },
+                          kSportActionPriority, false, "", true);
+    case SportAction::kHandstandEnter:
+    case SportAction::kHandstandExit: {
+      const bool enter = action == SportAction::kHandstandEnter;
+      unitree::robot::go2::JsonizeDataBool json;
+      json.data = enter;
+      return call(unitree::robot::go2::ROBOT_SPORT_API_ID_HANDSTAND,
+                  [this, enter]() { return client_->HandStand(enter); },
+                  unitree::common::ToJsonString(json));
+    }
+    case SportAction::kStandDown:
+      return call(unitree::robot::go2::ROBOT_SPORT_API_ID_STANDDOWN,
+                  [this]() { return client_->StandDown(); });
+    case SportAction::kStandUp:
+      return call(unitree::robot::go2::ROBOT_SPORT_API_ID_STANDUP,
+                  [this]() { return client_->StandUp(); });
+    case SportAction::kNewYearScrape:
+      return call(unitree::robot::go2::ROBOT_SPORT_API_ID_SCRAPE,
+                  [this]() { return client_->Scrape(); });
+  }
+  return kControlPathUnavailable;
 }
 
 }  // namespace go2_chassis

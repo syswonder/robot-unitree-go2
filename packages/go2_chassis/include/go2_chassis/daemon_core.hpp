@@ -44,6 +44,7 @@ class DaemonCore {
   bool faulted() const { return faulted_; }
   bool moving() const { return moving_; }
   bool stop_unconfirmed() const { return stop_unconfirmed_; }
+  const std::string &watchdog_reason() const { return watchdog_reason_; }
 
   ReplyPacket Handle(const CommandPacket &packet, std::uint64_t now_ns) {
     const ReplyCode validation = ValidateCommand(packet, now_ns);
@@ -122,6 +123,35 @@ class DaemonCore {
         }
         return Reply(packet.sequence, ReplyCode::kOk);
 
+      case CommandOp::kSportAction:
+        if (!config_.allow_motion) {
+          return Reply(packet.sequence, ReplyCode::kMotionDisabled);
+        }
+        if (!armed_ || faulted_) {
+          return Reply(packet.sequence, ReplyCode::kNotArmed);
+        }
+        if (!client_.FreshSportState(now_ns)) {
+          FaultStop();
+          return Reply(packet.sequence, ReplyCode::kFaultLatched);
+        }
+        if (motion_start_ns_ == 0U) {
+          motion_start_ns_ = now_ns;
+        }
+        if (now_ns < motion_start_ns_ ||
+            (config_.max_motion_ns != 0U &&
+             now_ns - motion_start_ns_ >= config_.max_motion_ns)) {
+          FaultStop();
+          return Reply(packet.sequence, ReplyCode::kLimitExceeded);
+        }
+        if (client_.SportActionCall(
+                static_cast<SportAction>(packet.reserved8)) != 0) {
+          FaultStop();
+          return Reply(packet.sequence, ReplyCode::kSdkError);
+        }
+        moving_ = true;
+        sport_action_active_ = true;
+        return Reply(packet.sequence, ReplyCode::kOk);
+
       case CommandOp::kMove:
         if (!config_.allow_motion) {
           return Reply(packet.sequence, ReplyCode::kMotionDisabled);
@@ -162,15 +192,22 @@ class DaemonCore {
     // timeout, so this cannot keep a stale Move stream alive.
     bool stop_attempted = false;
     if (stop_unconfirmed_) {
+      watchdog_reason_ = "retry_unconfirmed_stop";
       (void)StopAndDisarm();
       stop_attempted = true;
     }
     if (!armed_) {
       return stop_attempted;
     }
+    if (sport_action_active_ && !client_.FreshSportState(now_ns)) {
+      watchdog_reason_ = "sport_state_stale";
+      FaultStop();
+      return true;
+    }
     if (motion_start_ns_ != 0U && config_.max_motion_ns != 0U &&
         (now_ns < motion_start_ns_ ||
          now_ns - motion_start_ns_ >= config_.max_motion_ns)) {
+      watchdog_reason_ = "motion_duration_limit";
       FaultStop();
       return true;
     }
@@ -178,6 +215,7 @@ class DaemonCore {
         now_ns - last_packet_ns_ <= config_.watchdog_ns) {
       return false;
     }
+    watchdog_reason_ = "command_heartbeat_stale";
     FaultStop();
     return true;
   }
@@ -213,6 +251,7 @@ class DaemonCore {
   ReplyCode Stop(bool disarm) {
     const std::int32_t result = client_.StopMove();
     moving_ = false;
+    sport_action_active_ = false;
     if (disarm) {
       armed_ = false;
     }
@@ -230,6 +269,7 @@ class DaemonCore {
     if (!config_.allow_motion) {
       armed_ = false;
       moving_ = false;
+      sport_action_active_ = false;
       motion_start_ns_ = 0U;
       stop_unconfirmed_ = false;
       return ReplyCode::kOk;
@@ -245,6 +285,7 @@ class DaemonCore {
     if (!config_.allow_motion) {
       armed_ = false;
       moving_ = false;
+      sport_action_active_ = false;
       faulted_ = false;
       motion_start_ns_ = 0U;
       return ReplyCode::kOk;
@@ -254,6 +295,7 @@ class DaemonCore {
     if (armed_ || faulted_ || moving_ || stop_unconfirmed_) {
       const std::int32_t result = client_.StopMove();
       moving_ = false;
+      sport_action_active_ = false;
       armed_ = false;
       motion_start_ns_ = 0U;
       if (result != 0) {
@@ -273,6 +315,7 @@ class DaemonCore {
       stop_unconfirmed_ = client_.StopMove() != 0;
     }
     moving_ = false;
+    sport_action_active_ = false;
     armed_ = false;
     faulted_ = true;
   }
@@ -282,7 +325,9 @@ class DaemonCore {
   bool armed_{false};
   bool faulted_{false};
   bool moving_{false};
+  bool sport_action_active_{false};
   bool stop_unconfirmed_{false};
+  std::string watchdog_reason_;
   bool commissioning_arm_spent_{false};
   std::uint64_t last_sequence_{0};
   std::uint64_t last_packet_ns_{0};
