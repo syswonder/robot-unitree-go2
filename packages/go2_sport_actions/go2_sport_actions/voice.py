@@ -38,9 +38,8 @@ def action_from_utterance(text: str) -> str | None:
         "蹲下再起来", "卧下再起身", "卧倒再起身", "卧倒再起来",
     )):
         matches.append("crouch")
-    if any(word in utterance for word in ("舞蹈", "跳舞", "支舞")):
-        matches.append("dance_2" if any(word in utterance for word in
-                    ("第二", "二号", "另一支")) else "dance_1")
+    if any(word in utterance for word in ("舞蹈", "跳舞", "支舞", "个舞")):
+        matches.append("dance")
     if "伸展" in utterance or "拉伸" in utterance:
         matches.append("stretch")
     if any(word in utterance for word in ("打招呼", "打个招呼", "挥手")):

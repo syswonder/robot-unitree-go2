@@ -1,0 +1,20 @@
+manifestVersion: 1
+package:
+  name: robonix.skill.unitree.go2.sport_actions
+  version: 0.2.0
+  description: "宇树 Go2 EDU 遥控器上的拜年动作，不是鞠躬。"
+  license: Apache-2.0
+  tags: [skill, unitree, go2, sport, actions]
+  maintainers: [Origamii520 <zxq13204030517@163.com>]
+build: bash build.sh
+start: bash start.sh new_year_greeting
+capabilities:
+  - name: robonix/skill/unitree_go2_new_year_greeting/driver
+    path: capabilities/new_year_greeting_driver.v1.toml
+  - name: robonix/skill/unitree_go2_new_year_greeting/execute
+    path: capabilities/new_year_greeting_execute.v1.toml
+  - name: robonix/skill/unitree_go2_new_year_greeting/status
+    path: capabilities/new_year_greeting_status.v1.toml
+  - name: robonix/skill/unitree_go2_new_year_greeting/cancel
+    path: capabilities/new_year_greeting_cancel.v1.toml
+depends: []

@@ -128,9 +128,12 @@ kit, not a completed walking simulator or a separately registered deployment.
 ## Go2 Client voice sport actions
 
 The reusable [Go2 sport-action Skill](packages/go2_sport_actions/README.md)
-provides eight physically observed Go2 EDU routines through Client voice or
+registers seven independent Unitree-prefixed Skills in one package, with
 execute/status/cancel capabilities: greeting, stretching, New Year greeting,
-lie-down/stand-up, two dances, handstand, and short handstand walking.
+lie-down/stand-up, random dancing, handstand, and short handstand walking.
+The dance Skill samples either of two physically observed routines; all eight
+underlying motion plans retain their accepted parameters. Seven wrappers share
+one action-runtime Service, not seven competing chassis controllers.
 The [dedicated deployment](deploy/sport-actions/README.md) reuses the existing
 chassis SDK daemon and runs separately from navigation/following. Normal boot
 does not arm motion. The standalone skill package is published at

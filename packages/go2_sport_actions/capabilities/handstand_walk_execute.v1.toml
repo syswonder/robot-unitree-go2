@@ -1,0 +1,9 @@
+[contract]
+id = "robonix/skill/unitree_go2_handstand_walk/execute"
+version = "1"
+kind = "skill"
+idl = "go2_sport_actions/srv/PerformAction.srv"
+[mode]
+type = "rpc"
+[semantics]
+user_invocable = true

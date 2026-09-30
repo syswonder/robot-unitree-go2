@@ -8,7 +8,8 @@ import subprocess
 import threading
 import time
 
-from robonix_api import Err, Ok, Skill
+from robonix_api import Err, Ok, Skill, Service
+from go2_sport_actions.skills import RUNTIME_ID, RUNTIME_NAMESPACE
 from go2_sport_actions import catalog as core
 from go2_sport_actions.daemon_owner import ManagedDaemon
 from go2_sport_actions.runtime import ActionManager, PLANS
@@ -21,7 +22,30 @@ from go2_sport_actions_mcp import (
     ExecuteUtterance_Request, ExecuteUtterance_Response,
 )
 
-skill = Skill(id="go2_sport_actions", namespace="robonix/skill/go2_sport_actions")
+IS_RUNTIME = os.environ.get("GO2_SPORT_PROVIDER_ROLE") == "runtime"
+NAMESPACE = RUNTIME_NAMESPACE if IS_RUNTIME else "robonix/skill/go2_sport_actions"
+skill = (Service(id=RUNTIME_ID, namespace=NAMESPACE, md_path="") if IS_RUNTIME else
+         Skill(id="go2_sport_actions", namespace=NAMESPACE))
+
+
+def endpoint(leaf):
+    # Legacy list/preview/voice remain available for old deployments only.
+    if IS_RUNTIME and leaf not in {"execute", "status", "cancel"}:
+        return lambda fn: fn
+    if IS_RUNTIME:
+        # Old Pilot discovers all MCP endpoints regardless of user_invocable.
+        # Use internal typed gRPC so only the seven action Skills reach its tools.
+        def internal(fn):
+            import go2_sport_actions_pb2 as messages
+            response_name = {"execute": "ExecuteAction_Response",
+                             "status": "GetActionStatus_Response",
+                             "cancel": "CancelAction_Response"}[leaf]
+            def handler(request, _context):
+                return getattr(messages, response_name)(**fn(request).to_dict())
+            skill.grpc(f"{NAMESPACE}/{leaf}")(handler)
+            return fn
+        return internal
+    return skill.mcp(f"{NAMESPACE}/{leaf}")
 _manager = ActionManager()
 _managed_daemon: ManagedDaemon | None = None
 _daemon_process = None
@@ -90,7 +114,7 @@ def _ensure_managed_daemon() -> str:
 
 
 def _execute_action(name: str | None, request_id: str) -> dict:
-    if not isinstance(name, str) or name not in PLANS:
+    if not isinstance(name, str) or (name not in PLANS and name != "dance"):
         return _manager.execute(name, request_id)
     error = _ensure_managed_daemon()
     if error:
@@ -99,7 +123,7 @@ def _execute_action(name: str | None, request_id: str) -> dict:
     return _manager.execute(name, request_id)
 
 
-@skill.mcp("robonix/skill/go2_sport_actions/list")
+@endpoint("list")
 def list_actions(_request: ListActions_Request) -> ListActions_Response:
     value = core.catalog()
     value["daemon_socket_configured"] = _manager.configured
@@ -109,7 +133,7 @@ def list_actions(_request: ListActions_Request) -> ListActions_Response:
     return ListActions_Response(catalog_json=core.dumps(value))
 
 
-@skill.mcp("robonix/skill/go2_sport_actions/preview")
+@endpoint("preview")
 def preview(request: PreviewAction_Request) -> PreviewAction_Response:
     value = core.preview(request.name)
     value["physical_plan_prepared"] = request.name in PLANS
@@ -117,7 +141,7 @@ def preview(request: PreviewAction_Request) -> PreviewAction_Response:
     return PreviewAction_Response(result_json=core.dumps(value))
 
 
-@skill.mcp("robonix/skill/go2_sport_actions/execute")
+@endpoint("execute")
 def execute(request: ExecuteAction_Request) -> ExecuteAction_Response:
     """Run one canonical Go2 action: dance_1, dance_2, new_year_greeting,
     crouch, handstand, handstand_walk, stretch, or hello.
@@ -129,7 +153,7 @@ def execute(request: ExecuteAction_Request) -> ExecuteAction_Response:
                                   message=core.dumps(value))
 
 
-@skill.mcp("robonix/skill/go2_sport_actions/execute_utterance")
+@endpoint("execute_utterance")
 def execute_utterance(request: ExecuteUtterance_Request) -> ExecuteUtterance_Response:
     """For explicit Chinese Go2 stunt requests such as ‘跳舞’, ‘拜年’,
     ‘倒立’, ‘倒立向前走’, ‘伸展一下’, or ‘打个招呼’, map the speech to a named
@@ -150,14 +174,14 @@ def execute_utterance(request: ExecuteUtterance_Request) -> ExecuteUtterance_Res
                                      action_name=name or "", message=core.dumps(value))
 
 
-@skill.mcp("robonix/skill/go2_sport_actions/status")
+@endpoint("status")
 def status(request: GetActionStatus_Request) -> GetActionStatus_Response:
     return GetActionStatus_Response(result_json=core.dumps(_manager.status(request.run_id)))
 
 
-@skill.mcp("robonix/skill/go2_sport_actions/cancel")
+@endpoint("cancel")
 def cancel(request: CancelAction_Request) -> CancelAction_Response:
-    value = _manager.cancel(request.run_id)
+    value = _manager.cancel(request.run_id) if request.run_id else _manager.cancel_active()
     return CancelAction_Response(ok=value["ok"], message=core.dumps(value))
 
 
@@ -177,14 +201,16 @@ def init(config):
     if backend == "external" and not path:
         return Err("external backend requires daemon_socket")
     try:
+        replacement = ActionManager(path if backend != "catalog" else "",
+            dance_variants=config.get("dance_variants", ("dance_1", "dance_2")))
         managed = (ManagedDaemon.from_config(config, path)
                    if backend == "managed" else None)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         return Err(str(exc))
     _manager.shutdown()
     _stop_managed_daemon()
     _managed_daemon = managed
-    _manager = ActionManager(path if backend != "catalog" else "")
+    _manager = replacement
     return Ok()
 
 

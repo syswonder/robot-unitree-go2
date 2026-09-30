@@ -6,4 +6,4 @@ idl = "go2_sport_actions/srv/GetActionStatus.srv"
 [mode]
 type = "rpc"
 [semantics]
-user_invocable = true
+user_invocable = false

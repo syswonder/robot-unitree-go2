@@ -1,0 +1,20 @@
+manifestVersion: 1
+package:
+  name: robonix.skill.unitree.go2.sport_actions
+  version: 0.2.0
+  description: "宇树 Go2 EDU 倒立后以 0.06 m/s 向前走 5 秒，停止并恢复四足。"
+  license: Apache-2.0
+  tags: [skill, unitree, go2, sport, actions]
+  maintainers: [Origamii520 <zxq13204030517@163.com>]
+build: bash build.sh
+start: bash start.sh handstand_walk
+capabilities:
+  - name: robonix/skill/unitree_go2_handstand_walk/driver
+    path: capabilities/handstand_walk_driver.v1.toml
+  - name: robonix/skill/unitree_go2_handstand_walk/execute
+    path: capabilities/handstand_walk_execute.v1.toml
+  - name: robonix/skill/unitree_go2_handstand_walk/status
+    path: capabilities/handstand_walk_status.v1.toml
+  - name: robonix/skill/unitree_go2_handstand_walk/cancel
+    path: capabilities/handstand_walk_cancel.v1.toml
+depends: []

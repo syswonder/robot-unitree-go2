@@ -14,12 +14,15 @@ import time
 from typing import Any
 
 from .voice import action_from_utterance, is_cancel_utterance
+from .skills import BY_ACTION
 
 
 MODEL = "go2-sport-router"
 # Pilot qualifies MCP tools as provider_id + penultimate/last contract ID
 # segments, e.g. go2_sport_actions.go2_sport_actions_execute_utterance.
-CAPABILITY = "go2_sport_actions.go2_sport_actions_execute_utterance"
+def capability_for(action: str, leaf: str = "execute") -> str:
+    identity = BY_ACTION[action]["provider_id"]
+    return f"{identity}.{identity}_{leaf}"
 FEEDBACK_PREFIX = "Executor feedback for the current RTDL leaf (not a new user request): "
 MAX_BODY = 2 * 1024 * 1024
 
@@ -54,7 +57,7 @@ def _feedback_acceptance(messages: list[dict[str, Any]]) -> bool | None:
                 node = pending.pop()
                 if isinstance(node, dict):
                     contract = node.get("contract_id") or node.get("contractId")
-                    if isinstance(contract, str) and contract.endswith("/execute_utterance"):
+                    if isinstance(contract, str) and contract.endswith(("/execute_utterance", "/execute")):
                         output = node.get("output")
                         if isinstance(output, str):
                             try:
@@ -106,12 +109,13 @@ def decide(messages: list[dict[str, Any]]) -> dict[str, Any]:
     if should_call:
         tree = {
             "op": "sequence", "op_id": 0,
-            "description": "dispatch one Go2 sport utterance",
+            "description": "dispatch one Unitree Go2 skill",
             "children": [{
                 "op": "do", "op_id": 0,
                 "description": "Go2 named sport action through Skill",
-                "cap": CAPABILITY,
-                "args": {"text": command, "request_id": ""},
+                "cap": (capability_for("dance", "cancel") if is_cancel_utterance(command)
+                        else capability_for(action_from_utterance(command))),
+                "args": ({"run_id": ""} if is_cancel_utterance(command) else {"request_id": ""}),
             }],
         }
     return {"content": content, "rtdl_description": tree["description"],

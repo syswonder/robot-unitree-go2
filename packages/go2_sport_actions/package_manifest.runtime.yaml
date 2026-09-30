@@ -1,0 +1,20 @@
+manifestVersion: 1
+package:
+  name: robonix.skill.unitree.go2.sport_actions
+  version: 0.2.0
+  description: Shared single-owner execution service for seven Unitree Go2 action skills.
+  license: Apache-2.0
+  tags: [skill, unitree, go2, sport, actions]
+  maintainers: [Origamii520 <zxq13204030517@163.com>]
+build: bash build.sh
+start: bash start.sh runtime
+capabilities:
+  - name: robonix/service/unitree_go2_sport_runtime/driver
+    path: capabilities/runtime_driver.v1.toml
+  - name: robonix/service/unitree_go2_sport_runtime/execute
+    path: capabilities/runtime_execute.v1.toml
+  - name: robonix/service/unitree_go2_sport_runtime/status
+    path: capabilities/runtime_status.v1.toml
+  - name: robonix/service/unitree_go2_sport_runtime/cancel
+    path: capabilities/runtime_cancel.v1.toml
+depends: []

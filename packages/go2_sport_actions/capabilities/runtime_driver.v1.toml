@@ -1,0 +1,9 @@
+[contract]
+id = "robonix/service/unitree_go2_sport_runtime/driver"
+version = "1"
+kind = "service"
+idl = "lifecycle/srv/Driver.srv"
+[mode]
+type = "rpc"
+[semantics]
+user_invocable = false

@@ -194,8 +194,8 @@ class ManagedDaemonTests(unittest.TestCase):
 class VoiceTests(unittest.TestCase):
     def test_explicit_commands(self):
         cases = {
-            "请跳舞": "dance_1", "跳第一支舞": "dance_1",
-            "跳第二支舞": "dance_2",
+            "请跳舞": "dance", "跳支舞": "dance", "跳个舞吧": "dance",
+            "跳第一支舞": "dance", "跳第二支舞": "dance",
             "拜年": "new_year_greeting", "拜个年": "new_year_greeting",
             "倒立向前走": "handstand_walk",
             "做个倒立": "handstand", "伸展一下": "stretch",
