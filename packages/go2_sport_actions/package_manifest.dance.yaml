@@ -1,0 +1,20 @@
+manifestVersion: 1
+package:
+  name: robonix.skill.unitree.go2.sport_actions
+  version: 0.2.0
+  description: "宇树 Go2 EDU 跳支舞/跳个舞；从配置的两支已验收舞蹈中随机选一支，不要求用户或大模型指定编号。"
+  license: Apache-2.0
+  tags: [skill, unitree, go2, sport, actions]
+  maintainers: [Origamii520 <zxq13204030517@163.com>]
+build: bash build.sh
+start: bash start.sh dance
+capabilities:
+  - name: robonix/skill/unitree_go2_dance/driver
+    path: capabilities/dance_driver.v1.toml
+  - name: robonix/skill/unitree_go2_dance/execute
+    path: capabilities/dance_execute.v1.toml
+  - name: robonix/skill/unitree_go2_dance/status
+    path: capabilities/dance_status.v1.toml
+  - name: robonix/skill/unitree_go2_dance/cancel
+    path: capabilities/dance_cancel.v1.toml
+depends: []

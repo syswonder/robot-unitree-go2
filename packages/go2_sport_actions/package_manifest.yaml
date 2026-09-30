@@ -1,14 +1,78 @@
 manifestVersion: 1
 package:
   name: robonix.skill.unitree.go2.sport_actions
-  version: 0.1.0
-  description: Eight Go2 EDU sport actions with Robonix Client voice control, reusable execution/status/cancel APIs, and supervised physical acceptance.
+  version: 0.2.0
+  description: Seven independently registered Unitree Go2 action skills in one package, with randomized dancing and a shared runtime reusing eight physically validated routines.
   license: Apache-2.0
   tags: [skill, unitree, go2, sport, actions]
   maintainers: [Origamii520 <zxq13204030517@163.com>]
 build: bash build.sh
 start: bash start.sh
 capabilities:
+  - name: robonix/skill/unitree_go2_hello/driver
+    path: capabilities/hello_driver.v1.toml
+  - name: robonix/skill/unitree_go2_hello/execute
+    path: capabilities/hello_execute.v1.toml
+  - name: robonix/skill/unitree_go2_hello/status
+    path: capabilities/hello_status.v1.toml
+  - name: robonix/skill/unitree_go2_hello/cancel
+    path: capabilities/hello_cancel.v1.toml
+  - name: robonix/skill/unitree_go2_stretch/driver
+    path: capabilities/stretch_driver.v1.toml
+  - name: robonix/skill/unitree_go2_stretch/execute
+    path: capabilities/stretch_execute.v1.toml
+  - name: robonix/skill/unitree_go2_stretch/status
+    path: capabilities/stretch_status.v1.toml
+  - name: robonix/skill/unitree_go2_stretch/cancel
+    path: capabilities/stretch_cancel.v1.toml
+  - name: robonix/skill/unitree_go2_new_year_greeting/driver
+    path: capabilities/new_year_greeting_driver.v1.toml
+  - name: robonix/skill/unitree_go2_new_year_greeting/execute
+    path: capabilities/new_year_greeting_execute.v1.toml
+  - name: robonix/skill/unitree_go2_new_year_greeting/status
+    path: capabilities/new_year_greeting_status.v1.toml
+  - name: robonix/skill/unitree_go2_new_year_greeting/cancel
+    path: capabilities/new_year_greeting_cancel.v1.toml
+  - name: robonix/skill/unitree_go2_crouch/driver
+    path: capabilities/crouch_driver.v1.toml
+  - name: robonix/skill/unitree_go2_crouch/execute
+    path: capabilities/crouch_execute.v1.toml
+  - name: robonix/skill/unitree_go2_crouch/status
+    path: capabilities/crouch_status.v1.toml
+  - name: robonix/skill/unitree_go2_crouch/cancel
+    path: capabilities/crouch_cancel.v1.toml
+  - name: robonix/skill/unitree_go2_dance/driver
+    path: capabilities/dance_driver.v1.toml
+  - name: robonix/skill/unitree_go2_dance/execute
+    path: capabilities/dance_execute.v1.toml
+  - name: robonix/skill/unitree_go2_dance/status
+    path: capabilities/dance_status.v1.toml
+  - name: robonix/skill/unitree_go2_dance/cancel
+    path: capabilities/dance_cancel.v1.toml
+  - name: robonix/skill/unitree_go2_handstand/driver
+    path: capabilities/handstand_driver.v1.toml
+  - name: robonix/skill/unitree_go2_handstand/execute
+    path: capabilities/handstand_execute.v1.toml
+  - name: robonix/skill/unitree_go2_handstand/status
+    path: capabilities/handstand_status.v1.toml
+  - name: robonix/skill/unitree_go2_handstand/cancel
+    path: capabilities/handstand_cancel.v1.toml
+  - name: robonix/skill/unitree_go2_handstand_walk/driver
+    path: capabilities/handstand_walk_driver.v1.toml
+  - name: robonix/skill/unitree_go2_handstand_walk/execute
+    path: capabilities/handstand_walk_execute.v1.toml
+  - name: robonix/skill/unitree_go2_handstand_walk/status
+    path: capabilities/handstand_walk_status.v1.toml
+  - name: robonix/skill/unitree_go2_handstand_walk/cancel
+    path: capabilities/handstand_walk_cancel.v1.toml
+  - name: robonix/service/unitree_go2_sport_runtime/driver
+    path: capabilities/runtime_driver.v1.toml
+  - name: robonix/service/unitree_go2_sport_runtime/execute
+    path: capabilities/runtime_execute.v1.toml
+  - name: robonix/service/unitree_go2_sport_runtime/status
+    path: capabilities/runtime_status.v1.toml
+  - name: robonix/service/unitree_go2_sport_runtime/cancel
+    path: capabilities/runtime_cancel.v1.toml
   - name: robonix/skill/go2_sport_actions/driver
     path: capabilities/driver.v1.toml
   - name: robonix/skill/go2_sport_actions/list

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import threading
 import time
 import uuid
+import secrets
 from typing import Callable
 
 from .ipc import ARM, DISARM, MOVE, PING, SPORT_ACTION, STOP, DaemonClient
@@ -49,6 +50,7 @@ PLANS: dict[str, tuple[Step, ...]] = {
 class Run:
     name: str
     request_id: str
+    requested_name: str = ""
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     state: str = "QUEUED"
     dispatched_steps: int = 0
@@ -63,6 +65,7 @@ class Run:
             "known": True,
             "run_id": self.run_id,
             "name": self.name,
+            "requested_name": self.requested_name or self.name,
             "request_id": self.request_id,
             "state": self.state,
             "dispatched_steps": self.dispatched_steps,
@@ -78,7 +81,14 @@ class Cancelled(Exception):
 
 
 class ActionManager:
-    def __init__(self, socket_path: str = "", *, client_factory: Callable = DaemonClient):
+    def __init__(self, socket_path: str = "", *, client_factory: Callable = DaemonClient,
+                 dance_variants=("dance_1", "dance_2"), chooser: Callable = secrets.choice):
+        variants = tuple(dance_variants)
+        if not variants or len(set(variants)) != len(variants) or any(
+                name not in {"dance_1", "dance_2"} for name in variants):
+            raise ValueError("dance_variants must contain unique validated dance_1/dance_2 plans")
+        self.dance_variants = variants
+        self._chooser = chooser
         self.socket_path = socket_path
         self._client_factory = client_factory
         self._lock = threading.RLock()
@@ -90,7 +100,7 @@ class ActionManager:
         return bool(self.socket_path)
 
     def execute(self, name: str, request_id: str = "") -> dict:
-        if not isinstance(name, str) or name not in PLANS:
+        if not isinstance(name, str) or (name not in PLANS and name != "dance"):
             return {"accepted": False, "run_id": "", "reason": "action_not_in_physical_plan",
                     "request_id": request_id, "motion_sent": False}
         if not self.configured:
@@ -100,13 +110,21 @@ class ActionManager:
             if request_id:
                 for prior in self._runs.values():
                     if prior.request_id == request_id:
+                        if (prior.requested_name or prior.name) != name:
+                            return {"accepted": False, "run_id": prior.run_id,
+                                    "reason": "request_id_used_for_different_action",
+                                    "motion_sent": False}
                         return {"accepted": True, "run_id": prior.run_id,
+                                "selected_action": prior.name,
                                 "reason": "duplicate_request_id_existing_run",
                                 "request_id": request_id, "motion_sent": False}
             if self._active_run_id is not None:
                 return {"accepted": False, "run_id": "", "reason": "action_in_progress",
                         "request_id": request_id, "motion_sent": False}
-            run = Run(name=name, request_id=request_id)
+            # Choose once after deduplication/ownership checks, not in the LLM
+            # or voice parser. A retried request never starts another dance.
+            selected = self._chooser(self.dance_variants) if name == "dance" else name
+            run = Run(name=selected, requested_name=name, request_id=request_id)
             self._runs[run.run_id] = run
             self._active_run_id = run.run_id
             worker = threading.Thread(target=self._worker, args=(run,), daemon=True,
@@ -114,6 +132,7 @@ class ActionManager:
             run.thread = worker
             worker.start()
             return {"accepted": True, "run_id": run.run_id,
+                    "selected_action": selected,
                     "reason": "queued_check_status_for_dispatch",
                     "request_id": request_id, "motion_sent": False}
 

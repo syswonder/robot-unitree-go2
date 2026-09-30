@@ -34,6 +34,15 @@ primitive:
       listen_port: 60002
 
 service:
+  - name: unitree_go2_sport_runtime
+    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sport_actions
+    manifest: package_manifest.runtime.yaml
+    config:
+      backend: managed
+      daemon_socket: ${GO2_SDK_SOCKET}
+      daemon_binary: ${ROBONIX_DEPLOY_DIR}/packages/go2_chassis/rbnx-build/sdk/install/bin/go2_sport_daemon
+      network_interface: ${GO2_NETWORK_INTERFACE}
+      dance_variants: [dance_1, dance_2]
   - name: speech
     path: ${ROBONIX_SPEECH_PATH}
     config:
@@ -45,10 +54,38 @@ service:
       wake_words: ["罗伯尼克斯", "罗伯特"]
 
 skill:
-  - name: go2_sport_actions
+  # 宇树 Go2 打招呼；同一代码包，不复制实现。
+  - name: unitree_go2_hello
     path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sport_actions
-    config:
-      backend: managed
-      daemon_socket: ${GO2_SDK_SOCKET}
-      daemon_binary: ${ROBONIX_DEPLOY_DIR}/packages/go2_chassis/rbnx-build/sdk/install/bin/go2_sport_daemon
-      network_interface: ${GO2_NETWORK_INTERFACE}
+    manifest: package_manifest.hello.yaml
+    config: {action: hello, runtime_provider_id: unitree_go2_sport_runtime}
+  # 宇树 Go2 伸展；同一代码包，不复制实现。
+  - name: unitree_go2_stretch
+    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sport_actions
+    manifest: package_manifest.stretch.yaml
+    config: {action: stretch, runtime_provider_id: unitree_go2_sport_runtime}
+  # 宇树 Go2 拜年；同一代码包，不复制实现。
+  - name: unitree_go2_new_year_greeting
+    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sport_actions
+    manifest: package_manifest.new_year_greeting.yaml
+    config: {action: new_year_greeting, runtime_provider_id: unitree_go2_sport_runtime}
+  # 宇树 Go2 卧倒再起身；同一代码包，不复制实现。
+  - name: unitree_go2_crouch
+    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sport_actions
+    manifest: package_manifest.crouch.yaml
+    config: {action: crouch, runtime_provider_id: unitree_go2_sport_runtime}
+  # 宇树 Go2 跳舞；同一代码包，不复制实现。
+  - name: unitree_go2_dance
+    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sport_actions
+    manifest: package_manifest.dance.yaml
+    config: {action: dance, runtime_provider_id: unitree_go2_sport_runtime}
+  # 宇树 Go2 原地倒立；同一代码包，不复制实现。
+  - name: unitree_go2_handstand
+    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sport_actions
+    manifest: package_manifest.handstand.yaml
+    config: {action: handstand, runtime_provider_id: unitree_go2_sport_runtime}
+  # 宇树 Go2 倒立前进；同一代码包，不复制实现。
+  - name: unitree_go2_handstand_walk
+    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sport_actions
+    manifest: package_manifest.handstand_walk.yaml
+    config: {action: handstand_walk, runtime_provider_id: unitree_go2_sport_runtime}

@@ -1,46 +1,61 @@
 {
-  "description": "Issue one execute call at a time; poll status and confirm posture before advancing.",
-  "capability": "robonix/skill/go2_sport_actions/execute",
+  "description": "Seven individually registered skills; wait for terminal status and stable posture before next call. Dance is randomly sampled, not an alternating playlist.",
   "steps": [
     {
-      "name": "hello",
+      "skill": "unitree_go2_hello",
+      "capability": "robonix/skill/unitree_go2_hello/execute",
       "utterance": "打个招呼",
-      "request_id": "CHANGE_ME_session-1"
+      "args": {
+        "request_id": "CHANGE_ME_session-1"
+      }
     },
     {
-      "name": "stretch",
+      "skill": "unitree_go2_stretch",
+      "capability": "robonix/skill/unitree_go2_stretch/execute",
       "utterance": "伸展一下",
-      "request_id": "CHANGE_ME_session-2"
+      "args": {
+        "request_id": "CHANGE_ME_session-2"
+      }
     },
     {
-      "name": "new_year_greeting",
+      "skill": "unitree_go2_new_year_greeting",
+      "capability": "robonix/skill/unitree_go2_new_year_greeting/execute",
       "utterance": "拜年",
-      "request_id": "CHANGE_ME_session-3"
+      "args": {
+        "request_id": "CHANGE_ME_session-3"
+      }
     },
     {
-      "name": "crouch",
+      "skill": "unitree_go2_crouch",
+      "capability": "robonix/skill/unitree_go2_crouch/execute",
       "utterance": "卧倒再起身",
-      "request_id": "CHANGE_ME_session-4"
+      "args": {
+        "request_id": "CHANGE_ME_session-4"
+      }
     },
     {
-      "name": "dance_1",
-      "utterance": "跳第一支舞",
-      "request_id": "CHANGE_ME_session-5"
+      "skill": "unitree_go2_dance",
+      "capability": "robonix/skill/unitree_go2_dance/execute",
+      "utterance": "跳个舞吧",
+      "args": {
+        "request_id": "CHANGE_ME_session-5"
+      }
     },
     {
-      "name": "dance_2",
-      "utterance": "跳第二支舞",
-      "request_id": "CHANGE_ME_session-6"
-    },
-    {
-      "name": "handstand",
+      "skill": "unitree_go2_handstand",
+      "capability": "robonix/skill/unitree_go2_handstand/execute",
       "utterance": "做个倒立",
-      "request_id": "CHANGE_ME_session-7"
+      "args": {
+        "request_id": "CHANGE_ME_session-6"
+      }
     },
     {
-      "name": "handstand_walk",
+      "skill": "unitree_go2_handstand_walk",
+      "capability": "robonix/skill/unitree_go2_handstand_walk/execute",
       "utterance": "倒立向前走",
-      "request_id": "CHANGE_ME_session-8"
+      "args": {
+        "request_id": "CHANGE_ME_session-7"
+      }
     }
   ]
 }

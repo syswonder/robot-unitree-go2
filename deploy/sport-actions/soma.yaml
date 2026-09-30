@@ -13,14 +13,41 @@ robot:
     width_m: 0.31
     height_m: 0.40
   exports:
-    - provider_id: go2_sport_actions
+    - provider_id: unitree_go2_hello
       capabilities:
-        - {path: robonix/skill/go2_sport_actions/list, description: "List named Go2 actions and readiness."}
-        - {path: robonix/skill/go2_sport_actions/preview, description: "Preview a named action without movement."}
-        - {path: robonix/skill/go2_sport_actions/execute_utterance, description: "Dispatch an explicit Chinese dance, greeting, stretch or handstand request."}
-        - {path: robonix/skill/go2_sport_actions/execute, description: "Dispatch one canonical Go2 action."}
-        - {path: robonix/skill/go2_sport_actions/status, description: "Read accepted request and stop state; completion remains unverified."}
-        - {path: robonix/skill/go2_sport_actions/cancel, description: "Cancel an active sport-action run."}
+        - {path: robonix/skill/unitree_go2_hello/execute, description: "宇树 Go2 EDU 打招呼/挥手，执行一次后自然收尾。"}
+        - {path: robonix/skill/unitree_go2_hello/status, description: "查询任务状态，不代表物理完成。"}
+        - {path: robonix/skill/unitree_go2_hello/cancel, description: "请求取消当前动作。"}
+    - provider_id: unitree_go2_stretch
+      capabilities:
+        - {path: robonix/skill/unitree_go2_stretch/execute, description: "宇树 Go2 EDU 伸展身体/伸懒腰，执行一次后自然收尾。"}
+        - {path: robonix/skill/unitree_go2_stretch/status, description: "查询任务状态，不代表物理完成。"}
+        - {path: robonix/skill/unitree_go2_stretch/cancel, description: "请求取消当前动作。"}
+    - provider_id: unitree_go2_new_year_greeting
+      capabilities:
+        - {path: robonix/skill/unitree_go2_new_year_greeting/execute, description: "宇树 Go2 EDU 遥控器上的拜年动作，不是鞠躬。"}
+        - {path: robonix/skill/unitree_go2_new_year_greeting/status, description: "查询任务状态，不代表物理完成。"}
+        - {path: robonix/skill/unitree_go2_new_year_greeting/cancel, description: "请求取消当前动作。"}
+    - provider_id: unitree_go2_crouch
+      capabilities:
+        - {path: robonix/skill/unitree_go2_crouch/execute, description: "宇树 Go2 EDU 先卧倒，再自行站起；不是保持卧倒。"}
+        - {path: robonix/skill/unitree_go2_crouch/status, description: "查询任务状态，不代表物理完成。"}
+        - {path: robonix/skill/unitree_go2_crouch/cancel, description: "请求取消当前动作。"}
+    - provider_id: unitree_go2_dance
+      capabilities:
+        - {path: robonix/skill/unitree_go2_dance/execute, description: "宇树 Go2 EDU 跳支舞/跳个舞；从配置的两支已验收舞蹈中随机选一支，不要求用户或大模型指定编号。"}
+        - {path: robonix/skill/unitree_go2_dance/status, description: "查询任务状态，不代表物理完成。"}
+        - {path: robonix/skill/unitree_go2_dance/cancel, description: "请求取消当前动作。"}
+    - provider_id: unitree_go2_handstand
+      capabilities:
+        - {path: robonix/skill/unitree_go2_handstand/execute, description: "宇树 Go2 EDU 原地倒立、短暂停留并恢复四足，不向前走。"}
+        - {path: robonix/skill/unitree_go2_handstand/status, description: "查询任务状态，不代表物理完成。"}
+        - {path: robonix/skill/unitree_go2_handstand/cancel, description: "请求取消当前动作。"}
+    - provider_id: unitree_go2_handstand_walk
+      capabilities:
+        - {path: robonix/skill/unitree_go2_handstand_walk/execute, description: "宇树 Go2 EDU 倒立后以 0.06 m/s 向前走 5 秒，停止并恢复四足。"}
+        - {path: robonix/skill/unitree_go2_handstand_walk/status, description: "查询任务状态，不代表物理完成。"}
+        - {path: robonix/skill/unitree_go2_handstand_walk/cancel, description: "请求取消当前动作。"}
     - provider_id: speech
       capabilities:
         - {path: robonix/service/speech/asr, description: "Recognize the Client microphone utterance."}

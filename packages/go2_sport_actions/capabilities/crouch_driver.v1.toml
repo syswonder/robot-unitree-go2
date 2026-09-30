@@ -1,0 +1,9 @@
+[contract]
+id = "robonix/skill/unitree_go2_crouch/driver"
+version = "1"
+kind = "skill"
+idl = "lifecycle/srv/Driver.srv"
+[mode]
+type = "rpc"
+[semantics]
+user_invocable = false

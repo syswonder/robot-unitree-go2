@@ -1,0 +1,3 @@
+<?xml version="1.0"?>
+<!-- Registration fixture only. Not a Go2 physical model. -->
+<robot name="go2_skill_registration_fixture"><link name="base_link"/></robot>

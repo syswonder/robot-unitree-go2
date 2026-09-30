@@ -1,0 +1,48 @@
+manifestVersion: 1
+name: go2-seven-skills
+# Add these service/skill entries to your existing Client deployment.
+env:
+  ROBONIX_PROVIDER_BIND_HOST: 127.0.0.1
+  ROBONIX_ADVERTISE_HOST: 127.0.0.1
+system:
+  atlas: {listen: '127.0.0.1:50051', log: info}
+  soma: {listen: '127.0.0.1:50091', robot_yaml: offline-soma.yaml, log: info}
+service:
+  - name: unitree_go2_sport_runtime
+    path: ${GO2_SKILL_DIR}
+    manifest: package_manifest.runtime.yaml
+    config:
+      backend: managed
+      daemon_socket: ${GO2_SDK_SOCKET}
+      daemon_binary: ${GO2_ROBOT_DIR}/packages/go2_chassis/rbnx-build/sdk/install/bin/go2_sport_daemon
+      network_interface: ${GO2_NETWORK_INTERFACE}
+      dance_variants: [dance_1, dance_2]
+skill:
+  - name: unitree_go2_hello
+    path: ${GO2_SKILL_DIR}
+    manifest: package_manifest.hello.yaml
+    config: {action: hello, runtime_provider_id: unitree_go2_sport_runtime}
+  - name: unitree_go2_stretch
+    path: ${GO2_SKILL_DIR}
+    manifest: package_manifest.stretch.yaml
+    config: {action: stretch, runtime_provider_id: unitree_go2_sport_runtime}
+  - name: unitree_go2_new_year_greeting
+    path: ${GO2_SKILL_DIR}
+    manifest: package_manifest.new_year_greeting.yaml
+    config: {action: new_year_greeting, runtime_provider_id: unitree_go2_sport_runtime}
+  - name: unitree_go2_crouch
+    path: ${GO2_SKILL_DIR}
+    manifest: package_manifest.crouch.yaml
+    config: {action: crouch, runtime_provider_id: unitree_go2_sport_runtime}
+  - name: unitree_go2_dance
+    path: ${GO2_SKILL_DIR}
+    manifest: package_manifest.dance.yaml
+    config: {action: dance, runtime_provider_id: unitree_go2_sport_runtime}
+  - name: unitree_go2_handstand
+    path: ${GO2_SKILL_DIR}
+    manifest: package_manifest.handstand.yaml
+    config: {action: handstand, runtime_provider_id: unitree_go2_sport_runtime}
+  - name: unitree_go2_handstand_walk
+    path: ${GO2_SKILL_DIR}
+    manifest: package_manifest.handstand_walk.yaml
+    config: {action: handstand_walk, runtime_provider_id: unitree_go2_sport_runtime}

@@ -5,4 +5,13 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 API_ROOT="$("${RBNX_BIN:-rbnx}" path robonix-api)"
 test -f "$ROOT/rbnx-build/codegen/robonix_mcp_types/go2_sport_actions_mcp.py"
 export PYTHONPATH="$API_ROOT:$ROOT:$ROOT/rbnx-build/codegen/proto_gen:$ROOT/rbnx-build/codegen/robonix_mcp_types:${PYTHONPATH:-}"
-exec "${RBNX_RUNTIME_PYTHON:-python3}" -m go2_sport_actions.provider
+case "${1:-legacy}" in
+  runtime)
+    export GO2_SPORT_PROVIDER_ROLE=runtime
+    exec "${RBNX_RUNTIME_PYTHON:-python3}" -m go2_sport_actions.provider ;;
+  legacy)
+    unset GO2_SPORT_PROVIDER_ROLE
+    exec "${RBNX_RUNTIME_PYTHON:-python3}" -m go2_sport_actions.provider ;;
+  *)
+    exec "${RBNX_RUNTIME_PYTHON:-python3}" -m go2_sport_actions.action_provider "$1" ;;
+esac

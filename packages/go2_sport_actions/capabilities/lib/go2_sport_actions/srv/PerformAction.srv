@@ -1,0 +1,6 @@
+# The selected Skill identity fixes the action. No action-name or dance number.
+string request_id
+---
+bool accepted
+string run_id
+string message

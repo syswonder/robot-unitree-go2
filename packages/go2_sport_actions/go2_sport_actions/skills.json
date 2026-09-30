@@ -1,0 +1,86 @@
+[
+  {
+    "action": "hello",
+    "provider_id": "unitree_go2_hello",
+    "namespace": "robonix/skill/unitree_go2_hello",
+    "label": "宇树 Go2 打招呼",
+    "sdk": "Hello",
+    "description": "宇树 Go2 EDU 打招呼/挥手，执行一次后自然收尾。",
+    "init": {
+      "action": "hello",
+      "runtime_provider_id": "unitree_go2_sport_runtime"
+    }
+  },
+  {
+    "action": "stretch",
+    "provider_id": "unitree_go2_stretch",
+    "namespace": "robonix/skill/unitree_go2_stretch",
+    "label": "宇树 Go2 伸展",
+    "sdk": "Stretch",
+    "description": "宇树 Go2 EDU 伸展身体/伸懒腰，执行一次后自然收尾。",
+    "init": {
+      "action": "stretch",
+      "runtime_provider_id": "unitree_go2_sport_runtime"
+    }
+  },
+  {
+    "action": "new_year_greeting",
+    "provider_id": "unitree_go2_new_year_greeting",
+    "namespace": "robonix/skill/unitree_go2_new_year_greeting",
+    "label": "宇树 Go2 拜年",
+    "sdk": "Scrape",
+    "description": "宇树 Go2 EDU 遥控器上的拜年动作，不是鞠躬。",
+    "init": {
+      "action": "new_year_greeting",
+      "runtime_provider_id": "unitree_go2_sport_runtime"
+    }
+  },
+  {
+    "action": "crouch",
+    "provider_id": "unitree_go2_crouch",
+    "namespace": "robonix/skill/unitree_go2_crouch",
+    "label": "宇树 Go2 卧倒再起身",
+    "sdk": "StandDown → StandUp",
+    "description": "宇树 Go2 EDU 先卧倒，再自行站起；不是保持卧倒。",
+    "init": {
+      "action": "crouch",
+      "runtime_provider_id": "unitree_go2_sport_runtime"
+    }
+  },
+  {
+    "action": "dance",
+    "provider_id": "unitree_go2_dance",
+    "namespace": "robonix/skill/unitree_go2_dance",
+    "label": "宇树 Go2 跳舞",
+    "sdk": "Dance1 或 Dance2",
+    "description": "宇树 Go2 EDU 跳支舞/跳个舞；从配置的两支已验收舞蹈中随机选一支，不要求用户或大模型指定编号。",
+    "init": {
+      "action": "dance",
+      "runtime_provider_id": "unitree_go2_sport_runtime"
+    }
+  },
+  {
+    "action": "handstand",
+    "provider_id": "unitree_go2_handstand",
+    "namespace": "robonix/skill/unitree_go2_handstand",
+    "label": "宇树 Go2 原地倒立",
+    "sdk": "HandStand(true) → HandStand(false)",
+    "description": "宇树 Go2 EDU 原地倒立、短暂停留并恢复四足，不向前走。",
+    "init": {
+      "action": "handstand",
+      "runtime_provider_id": "unitree_go2_sport_runtime"
+    }
+  },
+  {
+    "action": "handstand_walk",
+    "provider_id": "unitree_go2_handstand_walk",
+    "namespace": "robonix/skill/unitree_go2_handstand_walk",
+    "label": "宇树 Go2 倒立前进",
+    "sdk": "HandStand + Move + StopMove + HandStand(false)",
+    "description": "宇树 Go2 EDU 倒立后以 0.06 m/s 向前走 5 秒，停止并恢复四足。",
+    "init": {
+      "action": "handstand_walk",
+      "runtime_provider_id": "unitree_go2_sport_runtime"
+    }
+  }
+]

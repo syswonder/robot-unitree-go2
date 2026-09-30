@@ -1,0 +1,16 @@
+# Registration-only robot description, not a physics or hardware model.
+urdf:
+  path: ./offline.urdf
+  root_link: base_link
+  model_name: go2_skill_registration_fixture
+robot:
+  id: go2_skill_offline
+  display_name: Go2 skill registration test (no hardware)
+  family: quadruped_robot
+  root_part: base
+  components:
+    - id: base
+      type: mobile_base
+      urdf_link: base_link
+description:
+  summary: Offline skill registration and non-motion API validation.

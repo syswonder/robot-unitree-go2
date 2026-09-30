@@ -2,15 +2,15 @@
 import json
 import unittest
 
-from go2_sport_actions.intent_router import CAPABILITY, FEEDBACK_PREFIX, decide
+from go2_sport_actions.intent_router import capability_for, FEEDBACK_PREFIX, decide
 
 
 class SportRouterTest(unittest.TestCase):
     def test_one_action_leaf(self):
         result = decide([{"role": "user", "content": "请跳舞"}])
         leaf = result["rtdl"]["children"][0]
-        self.assertEqual(leaf["cap"], CAPABILITY)
-        self.assertEqual(leaf["args"]["text"], "请跳舞")
+        self.assertEqual(leaf["cap"], capability_for("dance"))
+        self.assertEqual(leaf["args"], {"request_id": ""})
 
     def test_executor_feedback_does_not_reissue(self):
         feedback = {"leaf_result": {"contract_id":
@@ -24,7 +24,7 @@ class SportRouterTest(unittest.TestCase):
 
     def test_cancel_is_routed(self):
         result = decide([{"role": "user", "content": "停止动作"}])
-        self.assertEqual(result["rtdl"]["children"][0]["cap"], CAPABILITY)
+        self.assertEqual(result["rtdl"]["children"][0]["cap"], capability_for("dance", "cancel"))
 
     def test_backflip_and_questions_have_no_motion_leaf(self):
         for text in ("后空翻", "倒立能做吗", "不要跳舞", "去地图上的办公室"):

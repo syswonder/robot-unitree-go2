@@ -22,7 +22,7 @@ def main():
     bow = json.loads(preview(PreviewAction_Request(name="bow")).result_json)
     assert not bow["known"] and not bow["physical_plan_prepared"]
     result = execute_utterance(ExecuteUtterance_Request(text="请跳舞", request_id="offline"))
-    assert result.action_name == "dance_1" and not result.accepted
+    assert result.action_name == "dance" and not result.accepted
     assert json.loads(result.message)["reason"] == "physical_backend_not_configured"
     negated = execute_utterance(ExecuteUtterance_Request(text="不要跳舞", request_id="offline-2"))
     assert not negated.accepted and not negated.action_name

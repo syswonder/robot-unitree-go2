@@ -9,4 +9,4 @@ description = "Parse an explicit Chinese Go2 stunt command and dispatch one name
 type = "rpc"
 
 [semantics]
-user_invocable = true
+user_invocable = false

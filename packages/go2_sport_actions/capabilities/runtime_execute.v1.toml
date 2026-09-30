@@ -1,0 +1,9 @@
+[contract]
+id = "robonix/service/unitree_go2_sport_runtime/execute"
+version = "1"
+kind = "service"
+idl = "go2_sport_actions/srv/ExecuteAction.srv"
+[mode]
+type = "rpc"
+[semantics]
+user_invocable = false
