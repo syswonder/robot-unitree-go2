@@ -62,7 +62,7 @@ system:
   soma:
     listen: 127.0.0.1:50091
     provider_id: soma
-    robot_yaml: ${ROBONIX_DEPLOY_DIR}/soma.yaml
+    robot_yaml: ./soma.yaml
     log: info
   scene:
     log: info
@@ -75,7 +75,7 @@ system:
 
 primitive:
   - name: go2_chassis
-    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_chassis
+    path: ./packages/go2_chassis
     config:
       state_topic: /sportmodestate
       state_fallback_topic: /lf/sportmodestate
@@ -111,7 +111,7 @@ primitive:
       zero_preamble_s: 0.50
 
   - name: go2_sensors
-    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_sensors
+    path: ./packages/go2_sensors
     config:
       # local owns the relay and camera publisher processes on this host.
       # external only waits for and registers the standardized topics
@@ -130,7 +130,7 @@ primitive:
       camera_fps: 5.0
 
   - name: robot_description
-    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_description
+    path: ./packages/go2_description
 
   - name: audio_client_bridge
     url: https://github.com/syswonder/primitive-audio-client-bridge-rbnx
@@ -144,7 +144,7 @@ service:
   - name: mapping
     # Gitlink-pinned until the upstream PR is merged. This avoids rbnx's
     # mutable URL cache, which does not validate URL, branch, or source HEAD.
-    path: ${ROBONIX_DEPLOY_DIR}/third_party/service-map-rbnx
+    path: ./third_party/service-map-rbnx
     config:
       algo: rtabmap
       base_frame: base_link
@@ -206,7 +206,7 @@ service:
       wake_words: ["罗伯尼克斯", "罗伯特"]
 
   - name: nav2
-    path: ${ROBONIX_DEPLOY_DIR}/third_party/service-navigation-rbnx
+    path: ./third_party/service-navigation-rbnx
     config:
       params_file: config/nav2_params_go2.yaml
       bt_xml_file: config/navigate.xml
@@ -247,7 +247,7 @@ service:
       guard_global_spin_limit_rad: 4.20
 
   - name: go2_dashboard
-    path: ${ROBONIX_DEPLOY_DIR}/packages/go2_dashboard
+    path: ./packages/go2_dashboard
     config:
       host: 127.0.0.1
       port: ${GO2_DASHBOARD_PORT}
@@ -280,7 +280,7 @@ service:
 
 skill:
   - name: semantic_navigation
-    path: ${ROBONIX_DEPLOY_DIR}/packages/semantic_navigation
+    path: ./packages/semantic_navigation
     config:
       landmarks_file: ${SEMANTIC_LANDMARKS_FILE}
       expected_map_id: "${GO2_MAP_ID}"

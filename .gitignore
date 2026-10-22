@@ -21,3 +21,5 @@ config/gate2_replay.local.yaml
 /.runtime/mujoco-onboarding/
 /.runtime/go2-mujoco-venv/
 /.runtime/test-tmp/
+robonix_manifest.console.yaml
+console-local/

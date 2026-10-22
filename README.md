@@ -54,6 +54,9 @@ bound throughout the run. See
 
 ## Clone and inspect safely
 
+For Hub downloads and Console's “directory not found” diagnostics, see
+[Console installation and portable paths](docs/CONSOLE_INSTALL.md).
+
 ```bash
 git clone --recursive https://github.com/syswonder/robot-unitree-go2.git
 cd robot-unitree-go2
